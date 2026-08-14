@@ -1,0 +1,5 @@
+node_modules/
+dist/
+artifacts/
+.harness-backup/
+.DS_Store

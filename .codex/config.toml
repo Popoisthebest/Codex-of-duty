@@ -1,0 +1,14 @@
+model = "gpt-5.6-sol"
+model_reasoning_effort = "xhigh"
+plan_mode_reasoning_effort = "xhigh"
+model_verbosity = "low"
+
+sandbox_mode = "workspace-write"
+approval_policy = "on-request"
+approvals_reviewer = "auto_review"
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 6
+default_subagent_model = "gpt-5.6-terra"
+default_subagent_reasoning_effort = "medium"

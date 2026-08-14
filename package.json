@@ -1,0 +1,27 @@
+{
+  "name": "codex-of-duty",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "verify": "npm run build && npm run harness:check && npm run harness:playtest",
+    "harness:check": "node tools/harness-check.mjs",
+    "harness:capture": "node tools/capture.mjs",
+    "harness:shotset": "node tools/shotset.mjs",
+    "harness:baseline": "node tools/baseline.mjs",
+    "harness:diff": "node tools/imagediff.mjs",
+    "harness:playtest": "node tools/playtest.mjs",
+    "harness:profile": "node tools/profile.mjs"
+  },
+  "dependencies": {
+    "three": "0.180.0"
+  },
+  "devDependencies": {
+    "playwright": "1.61.1",
+    "pngjs": "7.0.0",
+    "vite": "7.3.6"
+  }
+}
