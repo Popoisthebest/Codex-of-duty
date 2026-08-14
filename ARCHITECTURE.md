@@ -125,17 +125,27 @@ payload는 plain object를 기본으로 한다.
 |---|---|---|
 | `weapon:fired` | weapons | shot created |
 | `weapon:reload` | weapons | reload phase/state |
+| `weapon:dryfire` | weapons | empty trigger feedback |
 | `projectile:impact` | physics | world/actor impact |
 | `combat:damage` | physics/ai | damage request/result |
+| `combat:hit` | ai | confirmed enemy damage semantic |
+| `ai:fired` | ai | enemy shot feedback request |
 | `actor:died` | ai/player | actor death |
 | `player:landed` | player | landing feedback |
 | `player:footstep` | player | surface footstep |
-| `player:state` | player | stance/sprint/ADS state |
+| `player:state` | player | health, pose, stance, sprint and grounded state |
 | `fx:explosion` | gameplay system | explosion request |
 | `game:ready` | core | harness-visible ready point |
 | `game:reset` | core | deterministic scenario reset |
+| `game:pause-changed` | ui | pointer-lock gameplay pause state |
+| `game:restart-request` | ui | player-requested deterministic redeploy |
 
 새 cross-system event를 만들면 이 표를 함께 갱신한다.
+
+`weapons` requests an `instant-hitscan-with-tracer` projectile model from
+`physics`: damage and impact resolve immediately at the fixed-step shot time,
+while `fx` renders the short-lived tracer as feedback. Event vector fields are
+plain `{ x, y, z }` objects rather than engine-class instances.
 
 ## Surface Vocabulary
 
@@ -143,6 +153,7 @@ payload는 plain object를 기본으로 한다.
 
 ```text
 concrete
+tile
 plaster
 brick
 metal

@@ -10,6 +10,7 @@ import {
   ensureDir,
   assertNoBrowserErrors,
   config,
+  sourceIdentity,
 } from './lib/common.mjs';
 
 const outDir = process.env.COD_BASELINE_DIR || path.join(ARTIFACTS, 'baseline');
@@ -24,6 +25,7 @@ await withDevServer(async () => {
     height: config.height,
     dpr: config.dpr,
     settleFrames: config.settleFrames,
+    sourceIdentity: sourceIdentity(),
     shots: [],
   };
 

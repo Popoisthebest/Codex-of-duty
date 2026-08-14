@@ -5,28 +5,46 @@ export function createHarnessBridge({
   setShot,
   stepFrames,
   snapshot,
+  runAction,
+  listShots,
+  listScenarios,
+  onReady,
+  bootstrap,
 }) {
   const params = new URLSearchParams(location.search);
   const harnessMode = params.get('harness') === '1';
   window.__COD_HARNESS_MODE__ = harnessMode;
+
+  let sequence = Promise.resolve();
+  const serialize = (operation) => {
+    const current = sequence.then(operation, operation);
+    sequence = current.catch(() => {});
+    return current;
+  };
 
   const bridge = {
     version: 2,
     ready: false,
 
     async reset(options = {}) {
-      await reset?.(options);
-      return bridge.snapshot();
+      return serialize(async () => {
+        await reset?.({ seed: options.seed, scenario: options.scenario });
+        return bridge.snapshot();
+      });
     },
 
     async setShot(name) {
-      await setShot?.(name);
-      return bridge.snapshot();
+      return serialize(async () => {
+        await setShot?.(name);
+        return bridge.snapshot();
+      });
     },
 
     async stepFrames(count) {
-      await stepFrames?.(count);
-      return bridge.snapshot();
+      return serialize(async () => {
+        await stepFrames?.(count);
+        return bridge.snapshot();
+      });
     },
 
     snapshot() {
@@ -43,6 +61,21 @@ export function createHarnessBridge({
         geometries: info?.memory?.geometries ?? null,
       };
     },
+
+    async runAction(name, options = {}) {
+      return serialize(async () => {
+        const result = await runAction?.(name, options);
+        return result ?? bridge.snapshot();
+      });
+    },
+
+    listShots() {
+      return listShots?.() ?? [];
+    },
+
+    listScenarios() {
+      return listScenarios?.() ?? ['default'];
+    },
   };
 
   window.__COD_HARNESS__ = bridge;
@@ -52,10 +85,14 @@ export function createHarnessBridge({
       const seed = Number(params.get('seed') ?? 1337);
       const scenario = params.get('scenario') ?? 'bootstrap';
       const shot = params.get('shot') ?? 'overview';
-      await bridge.reset({ seed, scenario });
-      await bridge.setShot(shot);
+      if (bootstrap) await bootstrap({ seed, scenario, shot });
+      else {
+        await bridge.reset({ seed, scenario });
+        await bridge.setShot(shot);
+      }
     }
     bridge.ready = true;
+    await onReady?.();
     window.dispatchEvent(new CustomEvent('cod:harness-ready'));
   });
 

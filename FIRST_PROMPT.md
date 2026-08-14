@@ -1,33 +1,23 @@
-# First Prompt
+/goal Build a first-person shooter at the level of the most recent Call of Duty games. Do not stop until the game is as close as practically achievable to AAA quality and all available visual, gameplay, and performance validation has been repeatedly used to improve it.
 
-아래 내용을 Codex에 한 번에 입력한다.
+I want you to build a first-person shooter at the level of the most recent Call of Duty games. It should be utterly exceptional, visually beautiful, with every single thing done at AAA quality—from textures and materials to lighting, animation, physics, gunplay, AI, audio, VFX, UI, environments, and anything else that contributes to the final game experience.
 
----
+Use the project's AGENTS.md, ARCHITECTURE.md, GAME_SPEC.md, Skills, reviewers, playtest, screenshot, image-diff, and profiling harness throughout development.
 
-이 프로젝트를 `GAME_SPEC.md`에 정의된 현대 군사 브라우저 FPS로 완성해줘.
+Use sub-agents aggressively for independent exploration, gameplay review, visual criticism, performance analysis, architecture review, and verification. For tightly coupled systems such as rendering, lighting, sky, exposure, materials, and viewmodel lighting, keep implementation under a sequential single owner so agents do not break each other's assumptions.
 
-작업을 시작하기 전에 `AGENTS.md`, `ARCHITECTURE.md`, `GAME_SPEC.md`, `docs/QUALITY_BAR.md`, 현재 코드와 tools contract를 모두 읽어라.
+Continuously iterate on every important part of the game. After each meaningful visual pass, use a separate sub-agent as an extremely harsh visual critic. It should judge the result against the visual quality bar of a current Call of Duty game. If it does not look AAA, identify the largest visible weaknesses, determine their actual root causes, improve them, capture the result again, and repeat.
 
-목표는 단순한 데모가 아니라 플레이 가능한 vertical slice다. 이동, 시점 조작, 발사, ADS, 재장전, 적 AI, 충돌, 전투 피드백, HUD, 합성 오디오, procedural environment가 서로 연결되어 실제 게임처럼 동작해야 한다.
+Do the same for gameplay. Movement, aiming, ADS, recoil, firing, reloads, hit feedback, enemy behavior, animation, physics, audio, and combat flow should feel like parts of one polished game rather than independent technical features.
 
-기본 실험 조건은 external art asset 없이 코드로 생성하는 방식이며 runtime dependency는 Three.js만 유지한다.
+Actually run the game throughout development. Use the browser playtest, deterministic screenshots, visual review, image diff when visual output must remain unchanged, and gameplay profiling. Do not judge visual quality from code alone.
 
-한 번에 많은 subsystem을 병렬 수정하지 마라. 강하게 결합된 관심사는 main agent가 sequential single-owner 방식으로 구현한다. subagent는 코드베이스 탐색, 독립 리뷰, 시각 비평, 테스트 감사, 성능 결과 해석처럼 충돌 위험이 낮은 작업에 사용한다.
+Do not optimize for benchmark numbers at the expense of the game. Performance matters because the game must feel smooth during real gameplay. Pay special attention to frame-time p95/p99, worst-frame hitches, shader compilation during gameplay, and other stalls that damage the player experience.
 
-각 주요 milestone마다 실제로 실행하고 검증하라. 최소한 다음을 사용한다.
+Do not blindly follow critic suggestions. Treat criticism as evidence of a visible problem, investigate the root cause, and make the change that actually improves the final result even when that change is different from what the critic initially suggested.
 
-- `npm run build`
-- `npm run harness:check`
-- `npm run harness:playtest`
-- `npm run harness:baseline`
-- `npm run harness:profile`
+Keep improving the largest remaining weaknesses first. Do not stop simply because all requested systems exist. Stop only when further meaningful improvement is no longer reasonably achievable with the available environment and tools, all major validation gates have been run after the final changes, and the result is a genuinely polished playable FPS.
 
-UI나 그래픽이 바뀌면 capture를 직접 확인하고, 시각 변경을 의도하지 않은 최적화에는 pixel diff를 사용하라.
+Do this in Three.js.
 
-평균 FPS 하나로 성능을 판단하지 말고 p50, p95, p99 frame time과 worst frame을 함께 본다. shader/program compilation이나 큰 hitch가 gameplay 중 발생하면 원인을 찾아 제거한다.
-
-문제가 발견되면 나에게 넘기지 말고 합리적으로 해결 가능한 범위에서는 직접 원인을 분석하고 수정한 뒤 전체 검증을 반복한다.
-
-`docs/QUALITY_BAR.md`의 completion gate를 만족할 때까지 작업을 계속하라.
-
-최종 답변에는 구현 내용, 실제로 실행한 검증, 성능 측정 결과, 남아 있는 한계를 사실대로 짧게 보고하라.
+The goal is not to reproduce Call of Duty's copyrighted maps, characters, logos, models, audio, textures, or other proprietary content. Create original game content while targeting the same class of visual fidelity, responsiveness, weapon feel, combat feedback, environmental density, and overall AAA polish.

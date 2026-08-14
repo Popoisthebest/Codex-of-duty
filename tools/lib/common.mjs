@@ -2,6 +2,7 @@ import { chromium } from 'playwright';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
+import crypto from 'node:crypto';
 
 export const ROOT = path.resolve(import.meta.dirname, '../..');
 export const ARTIFACTS = path.join(ROOT, 'artifacts');
@@ -34,6 +35,29 @@ export const canonicalShots = [
   'fx',
   'hud',
 ];
+
+export function sourceIdentity() {
+  const files = [];
+  const collect = (target) => {
+    const absolute = path.join(ROOT, target);
+    if (!fs.existsSync(absolute)) return;
+    const stat = fs.statSync(absolute);
+    if (stat.isDirectory()) {
+      for (const entry of fs.readdirSync(absolute).sort()) collect(path.join(target, entry));
+    } else {
+      files.push(target);
+    }
+  };
+  for (const target of ['src', 'tools', 'scripts', 'index.html', 'package.json', 'package-lock.json', 'vite.config.js']) collect(target);
+  const hash = crypto.createHash('sha256');
+  for (const file of files) {
+    hash.update(file);
+    hash.update('\0');
+    hash.update(fs.readFileSync(path.join(ROOT, file)));
+    hash.update('\0');
+  }
+  return { algorithm: 'sha256', digest: hash.digest('hex'), files: files.length };
+}
 
 export function ensureDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
@@ -97,9 +121,9 @@ export async function withDevServer(fn) {
   }
 }
 
-export async function launchBrowser() {
+export async function launchBrowser({ headless = true } = {}) {
   return chromium.launch({
-    headless: true,
+    headless,
     args: [
       '--enable-webgl',
       '--ignore-gpu-blocklist',

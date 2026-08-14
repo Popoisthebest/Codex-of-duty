@@ -1,121 +1,78 @@
 import * as THREE from 'three';
+import { Engine } from './core/engine.js';
 import { createHarnessBridge } from './core/harness.js';
+import { RenderSystem } from './render/render-system.js';
+import { WorldSystem } from './world/world-system.js';
+import { PlayerSystem } from './player/player-system.js';
+import { PhysicsSystem } from './physics/physics-system.js';
+import { WeaponSystem } from './weapons/weapon-system.js';
+import { AISystem } from './ai/ai-system.js';
+import { FXSystem } from './fx/fx-system.js';
+import { UISystem } from './ui/ui-system.js';
+import { AudioSystem } from './audio/audio-system.js';
+import { MaterialSystem } from './materials/material-system.js';
+import { SkySystem } from './sky/sky-system.js';
 
 const root = document.querySelector('#app');
-
-const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
-renderer.setSize(innerWidth, innerHeight);
-renderer.setClearColor(0x090b0d);
-root.appendChild(renderer.domElement);
+const canvas = document.createElement('canvas');
+canvas.setAttribute('aria-label', 'Codex of Duty game view');
+root.appendChild(canvas);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.05, 1000);
-camera.position.set(0, 1.7, 4);
+const camera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.04, 500);
+const viewScene = new THREE.Scene();
+const viewCamera = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.01, 20);
+const pageParams = new URLSearchParams(location.search);
 
-const light = new THREE.HemisphereLight(0xbfd8ff, 0x20180f, 2.0);
-scene.add(light);
+const engine = new Engine({ scene, camera, viewScene, viewCamera, canvas, config: { staticBatch: pageParams.get('batch') !== '0' } });
+engine.ctx.harness.active = pageParams.get('harness') === '1';
+engine
+  .register(new RenderSystem())
+  .register(new MaterialSystem())
+  .register(new SkySystem())
+  .register(new WorldSystem())
+  .register(new PhysicsSystem())
+  .register(new PlayerSystem())
+  .register(new WeaponSystem())
+  .register(new AISystem())
+  .register(new FXSystem())
+  .register(new UISystem())
+  .register(new AudioSystem());
 
-const ground = new THREE.Mesh(
-  new THREE.PlaneGeometry(20, 20),
-  new THREE.MeshStandardMaterial({ color: 0x30343a, roughness: 0.9 }),
-);
-ground.rotation.x = -Math.PI / 2;
-scene.add(ground);
+await engine.init();
+await engine.reset({ seed: 1337, scenario: 'default', render: false });
+if (!engine.ctx.harness.active) engine.setPaused(true);
+const pauseOff = engine.ctx.events.on('game:pause-changed', ({ paused }) => {
+  if (!engine.ctx.harness.active) engine.setPaused(paused);
+});
+const restartOff = engine.ctx.events.on('game:restart-request', async () => {
+  if (engine.ctx.harness.active) return;
+  engine.setPaused(true);
+  await engine.reset({ seed: 1337, scenario: 'default', render: false });
+  engine.setPaused(document.pointerLockElement !== canvas);
+  engine.start();
+});
 
-const marker = new THREE.Mesh(
-  new THREE.BoxGeometry(1, 1, 1),
-  new THREE.MeshStandardMaterial({ color: 0x626b73, roughness: 0.6 }),
-);
-marker.position.set(0, 0.5, 0);
-scene.add(marker);
-
-const state = {
-  frame: 0,
-  seed: 1337,
-  scenario: 'bootstrap',
-  shot: 'overview',
-};
-
-function applyShot(name) {
-  state.shot = name;
-  const presets = {
-    overview: [4, 3, 5],
-    street: [0, 1.7, 5],
-    interior: [2, 1.7, 2],
-    weapon_hip: [0, 1.7, 3],
-    weapon_ads: [0, 1.7, 2.6],
-    combat: [-2, 1.7, 3],
-    enemy: [1.5, 1.6, 3],
-    material_close: [0, 0.8, 1.6],
-    lighting: [3, 2, 3],
-    fx: [-3, 1.5, 2],
-    hud: [0, 1.7, 4],
-  };
-  const p = presets[name] ?? presets.overview;
-  camera.position.set(...p);
-  camera.lookAt(0, 0.7, 0);
-}
-
-function renderOneFrame() {
-  state.frame += 1;
-  marker.rotation.y = state.frame * 0.0025;
-  renderer.render(scene, camera);
-}
-
+const render = engine.ctx.get('render');
 createHarnessBridge({
-  renderer,
-  state,
-  reset({ seed = 1337, scenario = 'bootstrap' } = {}) {
-    state.seed = Number(seed) || 1337;
-    state.scenario = scenario;
-    state.frame = 0;
-    applyShot('overview');
-    renderOneFrame();
+  renderer: render.renderer,
+  state: engine.ctx.time,
+  reset: (options) => engine.reset(options),
+  setShot: (name) => engine.setShot(name),
+  stepFrames: (count) => engine.stepFrames(count),
+  snapshot: () => engine.snapshot(),
+  runAction: (name, options) => engine.runAction(name, options),
+  listShots: () => engine.listShots(),
+  listScenarios: () => ['default', 'contract-check', 'playtest', 'profile'],
+  bootstrap: async ({ seed, scenario, shot }) => {
+    if (!engine.listShots().includes(shot)) throw new Error(`Unknown canonical shot: ${shot}`);
+    await engine.reset({ seed, scenario, render: false });
+    await engine.applyShot(shot, true);
   },
-  setShot(name) {
-    applyShot(name);
-    renderOneFrame();
-  },
-  stepFrames(count) {
-    const n = Math.max(0, Math.min(10000, Math.floor(Number(count) || 0)));
-    for (let i = 0; i < n; i += 1) renderOneFrame();
-  },
-  snapshot() {
-    return {
-      frame: state.frame,
-      scenario: state.scenario,
-      shot: state.shot,
-      player: {
-        position: camera.position.toArray(),
-        health: 100,
-        stance: 'stand',
-        ads: false,
-        sprinting: false,
-      },
-      weapon: {
-        id: 'bootstrap',
-        ammo: 30,
-        reserve: 120,
-        reloading: false,
-      },
-      enemiesAlive: 0,
-    };
-  },
+  onReady: () => engine.ctx.events.emit('game:ready', { harness: engine.ctx.harness.active }),
 });
 
-function loop() {
-  if (!window.__COD_HARNESS_MODE__) {
-    renderOneFrame();
-  }
-  requestAnimationFrame(loop);
-}
-applyShot('overview');
-renderOneFrame();
-loop();
+if (!engine.ctx.harness.active) engine.start();
 
-addEventListener('resize', () => {
-  camera.aspect = innerWidth / innerHeight;
-  camera.updateProjectionMatrix();
-  renderer.setSize(innerWidth, innerHeight);
-});
+addEventListener('resize', () => engine.resize(innerWidth, innerHeight));
+addEventListener('beforeunload', () => { pauseOff(); restartOff(); engine.dispose(); }, { once: true });
