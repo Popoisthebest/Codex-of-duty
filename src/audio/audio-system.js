@@ -89,8 +89,8 @@ export class AudioSystem {
     const distance = this.rayDirection.length();
     if (distance < 0.6) return false;
     this.rayDirection.multiplyScalar(1 / distance);
-    const hit = this.ctx.get('physics').raycastWorld(camera.position, this.rayDirection, distance);
-    return Boolean(hit && hit.distance < distance - 0.16);
+    const hitDistance = this.ctx.get('physics').raycastWorldDistance(camera.position, this.rayDirection, distance);
+    return hitDistance != null && hitDistance < distance - 0.16;
   }
 
   createVoiceOutput(position, { spatial = false, reverb = 0.08, maxDistance = 45 } = {}) {

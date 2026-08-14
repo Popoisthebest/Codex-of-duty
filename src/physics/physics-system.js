@@ -11,15 +11,11 @@ export class PhysicsSystem {
     this.targetProviders = new Set();
     this.normalMatrix = new THREE.Matrix3();
     this.normal = new THREE.Vector3();
-    this.worldHit = {
-      distance: 0,
-      point: new THREE.Vector3(),
-      normal: new THREE.Vector3(),
-      surface: 'concrete',
-      actorId: null,
-      hitZone: null,
-      object: null,
-    };
+    this.worldRayDistance = 0;
+    this.worldRayCollider = null;
+    this.worldRayNormalX = 0;
+    this.worldRayNormalY = 0;
+    this.worldRayNormalZ = 0;
   }
 
   raycast(origin, direction, maxDistance = 100) {
@@ -37,6 +33,23 @@ export class PhysicsSystem {
     // four enemy LOS probes per fixed step far more expensive than the render
     // itself.  Reuse the same axis-aligned solids that own movement collision;
     // player hitscan still uses the detailed mesh path in `raycast()`.
+    if (!this.findWorldIntersection(origin, direction, maxDistance)) return null;
+    return {
+      distance: this.worldRayDistance,
+      point: origin.clone().addScaledVector(direction, this.worldRayDistance),
+      normal: new THREE.Vector3(this.worldRayNormalX, this.worldRayNormalY, this.worldRayNormalZ),
+      surface: this.worldRayCollider.surface ?? 'concrete',
+      actorId: null,
+      hitZone: null,
+      object: null,
+    };
+  }
+
+  raycastWorldDistance(origin, direction, maxDistance = 100) {
+    return this.findWorldIntersection(origin, direction, maxDistance) ? this.worldRayDistance : null;
+  }
+
+  findWorldIntersection(origin, direction, maxDistance) {
     let nearest = maxDistance;
     let nearestCollider = null;
     let normalX = 0; let normalY = 0; let normalZ = 0;
@@ -92,12 +105,13 @@ export class PhysicsSystem {
       nearestCollider = collider;
       normalX = hitX; normalY = hitY; normalZ = hitZ;
     }
-    if (!nearestCollider) return null;
-    this.worldHit.distance = nearest;
-    this.worldHit.point.copy(origin).addScaledVector(direction, nearest);
-    this.worldHit.normal.set(normalX, normalY, normalZ);
-    this.worldHit.surface = nearestCollider.surface ?? 'concrete';
-    return this.worldHit;
+    if (!nearestCollider) return false;
+    this.worldRayDistance = nearest;
+    this.worldRayCollider = nearestCollider;
+    this.worldRayNormalX = normalX;
+    this.worldRayNormalY = normalY;
+    this.worldRayNormalZ = normalZ;
+    return true;
   }
 
   intersectTargets(origin, direction, maxDistance) {
@@ -149,11 +163,11 @@ export class PhysicsSystem {
   getCoverPoints() { return this.ctx.get('world').getCoverPoints(); }
   getGroundSurface(position) { return this.ctx.get('world').surfaceAt(position); }
 
-  separateActors(positions, radius = 0.33) {
-    const minimum = radius * 2;
+  separateActors(positions, radii = null, radius = 0.33) {
     for (let i = 0; i < positions.length; i += 1) {
       for (let j = i + 1; j < positions.length; j += 1) {
         const a = positions[i]; const b = positions[j];
+        const minimum = (radii?.[i] ?? radius) + (radii?.[j] ?? radius);
         let dx = b.x - a.x; let dz = b.z - a.z; let distance = Math.hypot(dx, dz);
         if (distance >= minimum) continue;
         if (distance < 1e-5) { dx = (i + j) % 2 ? 1 : -1; dz = (i * 3 + j) % 2 ? 0.5 : -0.5; distance = Math.hypot(dx, dz); }
@@ -161,7 +175,7 @@ export class PhysicsSystem {
         a.x -= dx * push; a.z -= dz * push; b.x += dx * push; b.z += dz * push;
       }
     }
-    for (const position of positions) this.resolveActor(position, radius);
+    for (let i = 0; i < positions.length; i += 1) this.resolveActor(positions[i], radii?.[i] ?? radius);
   }
 
   fireHitscan({ origin, direction, maxDistance = 100, damage = 30, source = 'player' }) {

@@ -15,17 +15,19 @@ import {
 
 const frames = envNumber('COD_PROFILE_FRAMES', 900);
 const warmup = envNumber('COD_PROFILE_WARMUP', 120);
+const headed = process.env.COD_PROFILE_HEADED === '1';
 const outDir = process.env.COD_PROFILE_DIR || path.join(ARTIFACTS, 'profiles');
 ensureDir(outDir);
 
 await withDevServer(async () => {
-  const browser = await launchBrowser();
+  const browser = await launchBrowser({ headless: !headed });
 
   try {
     const { page, context, errors } = await newHarnessPage(browser, {
       shot: 'combat',
       scenario: 'profile',
     });
+    if (headed) await page.bringToFront();
 
     const result = await page.evaluate(async ({ warmup, frames }) => {
       const h = window.__COD_HARNESS__;
@@ -119,6 +121,7 @@ await withDevServer(async () => {
         width: config.width,
         height: config.height,
         dpr: config.dpr,
+        headed,
         warmup,
         frames,
       },

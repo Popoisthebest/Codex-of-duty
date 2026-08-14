@@ -19,6 +19,7 @@ export class AISystem {
     this.resources = new Set();
     this.enemies = [];
     this.livePositions = [];
+    this.liveRadii = [];
     this.damageOff = ctx.events.on('combat:damage', (event) => this.onDamage(event));
     this.buildEnemies();
     this.unregisterTargets = ctx.get('physics').registerTargetProvider((targets) => this.appendRaycastTargets(targets));
@@ -148,8 +149,8 @@ export class AISystem {
       this.eye.copy(enemy.root.position); this.eye.y += enemy.inCover ? 1.15 : 1.48;
       this.target.copy(player.position); this.target.y += player.eyeHeight * 0.86;
       this.ray.subVectors(this.target, this.eye); const rayDistance = this.ray.length(); this.ray.multiplyScalar(1 / Math.max(0.0001, rayDistance));
-      const obstruction = ctx.get('physics').raycastWorld(this.eye, this.ray, rayDistance);
-      enemy.hasLos = !obstruction || obstruction.distance >= rayDistance - 0.12;
+      const obstructionDistance = ctx.get('physics').raycastWorldDistance(this.eye, this.ray, rayDistance);
+      enemy.hasLos = obstructionDistance == null || obstructionDistance >= rayDistance - 0.12;
       if (enemy.hasLos) enemy.lastSeen.copy(player.position);
       enemy.root.rotation.y = Math.atan2(-dx, -dz);
       enemy.cooldown -= step;
@@ -213,8 +214,10 @@ export class AISystem {
       this.animateEnemy(enemy, ctx);
     }
     this.livePositions.length = 0;
-    for (const enemy of this.enemies) if (enemy.alive) this.livePositions.push(enemy.root.position);
-    ctx.get('physics').separateActors(this.livePositions, 0.31);
+    this.liveRadii.length = 0;
+    this.livePositions.push(player.position); this.liveRadii.push(0.36);
+    for (const enemy of this.enemies) if (enemy.alive) { this.livePositions.push(enemy.root.position); this.liveRadii.push(0.31); }
+    ctx.get('physics').separateActors(this.livePositions, this.liveRadii);
   }
 
   animateEnemy(enemy, ctx) {
@@ -294,8 +297,8 @@ export class AISystem {
       const playerDistance = Math.hypot(x - player.position.x, z - player.position.z);
       if (enemyDistance > 8 || playerDistance < 2.2) continue;
       this.coverPoint.set(x, 1.25, z); this.coverRay.subVectors(this.coverPoint, this.coverOrigin); const rayDistance = this.coverRay.length(); this.coverRay.multiplyScalar(1 / Math.max(0.001, rayDistance));
-      const obstruction = physics.raycastWorld(this.coverOrigin, this.coverRay, rayDistance);
-      if (!obstruction || obstruction.distance >= rayDistance - 0.2) continue;
+      const obstructionDistance = physics.raycastWorldDistance(this.coverOrigin, this.coverRay, rayDistance);
+      if (obstructionDistance == null || obstructionDistance >= rayDistance - 0.2) continue;
       const score = enemyDistance + playerDistance * 0.08;
       if (score < bestScore) { bestScore = score; best = [x, z]; }
     }
