@@ -283,6 +283,9 @@ await withDevServer(async () => {
       throw new Error(`Web Audio did not produce active spatial/reverb feedback: ${JSON.stringify(liveInput.audio)}`);
     }
     const enemyFeedback = await normalPage.evaluate(() => window.__COD_HARNESS__.runAction('enemy_fire_feedback', { frames: 4 }));
+    if (!enemyFeedback.enemies[0]?.hasLos || enemyFeedback.enemies[0]?.state !== 'engage') {
+      throw new Error(`Enemy failed to acquire the player across a staged open world path: ${JSON.stringify(enemyFeedback.enemies[0])}`);
+    }
     if (enemyFeedback.audio.enemyShotEvents <= 0 || enemyFeedback.fx.enemyMuzzleEvents <= 0) {
       throw new Error(`Enemy fire lacked independently proven source feedback: ${JSON.stringify({ audio: enemyFeedback.audio, fx: enemyFeedback.fx })}`);
     }

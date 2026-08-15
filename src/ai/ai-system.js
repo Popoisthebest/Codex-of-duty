@@ -217,7 +217,7 @@ export class AISystem {
     this.liveRadii.length = 0;
     this.livePositions.push(player.position); this.liveRadii.push(0.36);
     for (const enemy of this.enemies) if (enemy.alive) { this.livePositions.push(enemy.root.position); this.liveRadii.push(0.31); }
-    ctx.get('physics').separateActors(this.livePositions, this.liveRadii);
+    ctx.get('physics').separateActors(this.livePositions, this.liveRadii, 0);
   }
 
   animateEnemy(enemy, ctx) {
