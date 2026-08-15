@@ -1,46 +1,34 @@
-# Codex of Duty — Claude Code Project Memory
-
 @AGENTS.md
-@GAME_SPEC.md
-@docs/GAMEPLAY_QUALITY_BAR.md
-@docs/GAMEPLAY_HARNESS_CONTRACT.md
 
-## Mission override
+# Claude Code instructions
 
-This repository already contains substantial FPS rendering, weapon, material, map, AI, harness, and performance work.
+This project was previously developed with Codex and is being continued with Claude Code.
 
-Do not restart the project.
+The repository itself is the source of truth. Do not restart completed systems.
 
-The current highest-priority defect is not visual fidelity. It is that the project risks behaving like a visually polished FPS technology demo instead of a complete game.
+Before substantial work, read:
 
-Until the gameplay gates in this repository pass, prioritize:
+- FIRST_PROMPT.md
+- ARCHITECTURE.md
+- GAME_SPEC.md
+- docs/QUALITY_BAR.md
+- docs/PROCESS.md
+- docs/HARNESS_CONTRACT.md
 
-1. complete match loop
-2. meaningful map scale and route structure
-3. team combat and bot activity
-4. spawn / death / respawn quality
-5. score / victory / defeat / restart
-6. encounter pacing and combat readability
+Preserve and use the existing harness.
 
-Preserve strong existing weapon, rendering, material, FX, audio, and world work unless a gameplay requirement demands a change.
+For every meaningful implementation pass:
 
-## Operating rule
+1. Inspect the current repository state.
+2. Identify the highest-impact remaining quality problem.
+3. Implement the fix or improvement.
+4. Run the appropriate build and harness validation.
+5. Investigate failures rather than bypassing or weakening validation.
+6. Visually inspect generated artifacts when relevant.
+7. Continue toward the goal in FIRST_PROMPT.md.
 
-Use subagents aggressively for independent inspection, criticism, map review, AI review, QA, visual review, and performance analysis.
+The primary goal is the highest achievable modern AAA military FPS quality and gameplay feel in this Three.js project.
 
-Keep tightly coupled implementation changes under one coherent writer whenever possible.
+Do not blindly follow critic suggestions. Diagnose root causes using code, measurements, screenshots, and runtime evidence.
 
-Do not weaken a validation gate merely to make it pass.
-
-Do not claim a gameplay milestone is complete from code inspection alone. Run the game and collect evidence.
-
-## Required read order for a major pass
-
-1. `FIRST_PROMPT.md`
-2. `ARCHITECTURE.md`
-3. `GAME_SPEC.md`
-4. `docs/GAMEPLAY_QUALITY_BAR.md`
-5. `docs/GAMEPLAY_HARNESS_CONTRACT.md`
-6. `docs/GAMEPLAY_ROADMAP.md`
-7. current git status / recent history
-8. relevant source and artifacts
+Use subagents for independent exploration, review, visual criticism, and performance analysis when useful. Avoid multiple agents concurrently editing tightly coupled systems.
