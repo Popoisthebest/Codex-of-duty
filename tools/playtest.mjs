@@ -279,8 +279,11 @@ await withDevServer(async () => {
     if (liveMove < 0.1 || Math.abs(liveInput.player.yaw - deployed.player.yaw) < 0.01 || liveInput.weapon.shotsFired <= deployed.weapon.shotsFired) {
       throw new Error(`Real keyboard/mouse input did not drive gameplay: ${JSON.stringify({ deployed, liveInput })}`);
     }
-    if (liveInput.audio.state !== 'running' || liveInput.audio.eventsPlayed <= 0 || liveInput.audio.spatialEvents <= 0 || !liveInput.audio.reverbReady) {
-      throw new Error(`Web Audio did not produce active spatial/reverb feedback: ${JSON.stringify(liveInput.audio)}`);
+    // On a district-scale map an arbitrary burst can leave the play space, so
+    // spatial audio is proven below against deterministic staged combat rather
+    // than against wherever the free-look burst happened to point.
+    if (liveInput.audio.state !== 'running' || liveInput.audio.eventsPlayed <= 0 || !liveInput.audio.reverbReady) {
+      throw new Error(`Web Audio did not initialise under live input: ${JSON.stringify(liveInput.audio)}`);
     }
     const enemyFeedback = await normalPage.evaluate(() => window.__COD_HARNESS__.runAction('enemy_fire_feedback', { frames: 4 }));
     if (!enemyFeedback.enemies[0]?.hasLos || enemyFeedback.enemies[0]?.state !== 'engage') {
@@ -288,6 +291,13 @@ await withDevServer(async () => {
     }
     if (enemyFeedback.audio.enemyShotEvents <= 0 || enemyFeedback.fx.enemyMuzzleEvents <= 0) {
       throw new Error(`Enemy fire lacked independently proven source feedback: ${JSON.stringify({ audio: enemyFeedback.audio, fx: enemyFeedback.fx })}`);
+    }
+    if (enemyFeedback.audio.spatialEvents <= 0) {
+      throw new Error(`Enemy fire produced no spatialised voice: ${JSON.stringify(enemyFeedback.audio)}`);
+    }
+    const playerEngagement = await normalPage.evaluate(() => window.__COD_HARNESS__.runAction('engage_enemy', { frames: 40 }));
+    if (playerEngagement.fx.impactEvents <= enemyFeedback.fx.impactEvents || playerEngagement.audio.spatialEvents <= enemyFeedback.audio.spatialEvents) {
+      throw new Error(`Player fire produced no impact/spatial feedback: ${JSON.stringify({ before: enemyFeedback.fx, after: playerEngagement.fx, audio: playerEngagement.audio })}`);
     }
     await normalPage.evaluate(() => document.exitPointerLock());
     await normalPage.waitForFunction(() => document.pointerLockElement === null && window.__COD_HARNESS__.snapshot().paused === true, null, { timeout: config.timeoutMs });
@@ -301,33 +311,76 @@ await withDevServer(async () => {
     }
     await acquirePointerLock(normalPage);
     await normalPage.waitForFunction(() => window.__COD_HARNESS__.snapshot().paused === false, null, { timeout: config.timeoutMs });
+
+    // v3 death is a respawn, not a mission failure: the match keeps running, the
+    // player keeps pointer lock, and re-entry happens without any UI input.
+    const beforeDeath = await normalPage.evaluate(() => window.__COD_HARNESS__.snapshot());
     await normalPage.evaluate(() => window.__COD_HARNESS__.runAction('force_player_death', { frames: 2 }));
     await normalPage.waitForFunction(() => !document.querySelector('#death-screen').hidden, null, { timeout: config.timeoutMs });
+    const died = await normalPage.evaluate(() => window.__COD_HARNESS__.snapshot());
+    if (!died.player.dead || died.match.phase !== 'active') {
+      throw new Error(`Player death did not enter a respawn state inside a live match: ${JSON.stringify(died.match)}`);
+    }
+    if (died.paused) {
+      throw new Error('Death paused the match instead of starting a respawn.');
+    }
+    await normalPage.waitForFunction(() => {
+      const state = window.__COD_HARNESS__.snapshot();
+      return !state.player.dead && state.player.health === 100 && document.querySelector('#death-screen').hidden;
+    }, null, { timeout: config.timeoutMs });
+    const respawned = await normalPage.evaluate(() => window.__COD_HARNESS__.snapshot());
+    const respawnMove = Math.hypot(respawned.player.position[0] - died.player.position[0], respawned.player.position[2] - died.player.position[2]);
+    if (respawned.weapon.ammo !== 30 || respawned.player.health !== 100 || respawnMove < 1) {
+      throw new Error(`Respawn did not restore a clean combat-ready state at a new position: ${JSON.stringify({ died, respawned, respawnMove })}`);
+    }
+    if (respawned.match.telemetry.respawns <= beforeDeath.match.telemetry.respawns) {
+      throw new Error('Respawn was not recorded by authoritative match telemetry.');
+    }
+    if (respawned.paused) throw new Error('Match paused across the respawn.');
+    if (!(await normalPage.evaluate(() => document.pointerLockElement === document.querySelector('canvas')))) {
+      throw new Error('Respawn released pointer lock; the player was ejected from a live match.');
+    }
+
+    // Drive the live match to a real score-limit end, then rematch through the UI.
+    const ended = await normalPage.evaluate(() => window.__COD_HARNESS__.runAction('run_match_to_end', { remainingKills: 2 }));
+    if (ended.match.phase !== 'ended' || !['alpha', 'bravo', 'draw'].includes(ended.match.winner) || ended.match.endReason !== 'score-limit') {
+      throw new Error(`Match did not reach a score-limit end state: ${JSON.stringify(ended.match)}`);
+    }
+    await normalPage.waitForFunction(() => !document.querySelector('#match-end').hidden, null, { timeout: config.timeoutMs });
     await normalPage.locator('#restart-button').click();
     await normalPage.waitForFunction(() => {
       const state = window.__COD_HARNESS__.snapshot();
       return !state.player.dead
         && state.player.health === 100
+        && state.match.scores.alpha === 0
+        && state.match.scores.bravo === 0
+        && state.match.winner === null
         && !state.paused
+        && document.querySelector('#match-end').hidden
         && document.querySelector('#death-screen').hidden
         && document.querySelector('#briefing').classList.contains('is-hidden')
         && document.pointerLockElement === document.querySelector('canvas');
     }, null, { timeout: config.timeoutMs });
     const redeployed = await normalPage.evaluate(() => window.__COD_HARNESS__.snapshot());
     if (redeployed.audio.eventsPlayed !== 0 || redeployed.audio.spatialEvents !== 0 || redeployed.audio.activeVoices !== 0 || redeployed.audio.enemyShotEvents !== 0) {
-      throw new Error(`Redeploy retained prior-session audio state: ${JSON.stringify(redeployed.audio)}`);
+      throw new Error(`Rematch retained prior-session audio state: ${JSON.stringify(redeployed.audio)}`);
+    }
+    if (redeployed.enemiesAlive !== 6) {
+      throw new Error(`Rematch did not restore a full enemy roster: ${redeployed.enemiesAlive}`);
     }
     await normalPage.waitForTimeout(180);
     const resumed = await normalPage.evaluate(() => window.__COD_HARNESS__.snapshot());
     if (resumed.paused || resumed.frame <= redeployed.frame) {
-      throw new Error(`Redeploy did not resume simulation: ${JSON.stringify({ redeployed, resumed })}`);
+      throw new Error(`Rematch did not resume simulation: ${JSON.stringify({ redeployed, resumed })}`);
     }
-    await normalPage.evaluate(() => window.__COD_HARNESS__.runAction('force_player_death', { frames: 2 }));
-    await normalPage.waitForFunction(
-      () => !document.querySelector('#death-screen').hidden && document.pointerLockElement === null,
-      null,
-      { timeout: config.timeoutMs },
-    );
+
+    // A rematch whose pointer-lock request is refused must land paused on the
+    // briefing rather than running the match without mouse control.
+    const endedAgain = await normalPage.evaluate(() => window.__COD_HARNESS__.runAction('run_match_to_end', { remainingKills: 1 }));
+    if (endedAgain.match.phase !== 'ended') {
+      throw new Error(`Second match did not end: ${JSON.stringify(endedAgain.match)}`);
+    }
+    await normalPage.waitForFunction(() => !document.querySelector('#match-end').hidden && document.pointerLockElement === null, null, { timeout: config.timeoutMs });
     await normalPage.evaluate(() => {
       document.querySelector('canvas').requestPointerLock = () => Promise.reject(new DOMException('forced test rejection', 'NotAllowedError'));
     });
@@ -337,13 +390,13 @@ await withDevServer(async () => {
       return !state.player.dead
         && state.player.health === 100
         && state.paused
-        && document.querySelector('#death-screen').hidden
+        && document.querySelector('#match-end').hidden
         && !document.querySelector('#briefing').classList.contains('is-hidden')
         && document.pointerLockElement === null;
     }, null, { timeout: config.timeoutMs });
     const rejectedRedeploy = await normalPage.evaluate(() => window.__COD_HARNESS__.snapshot());
     assertNoBrowserErrors(normalErrors);
-    console.log(JSON.stringify({ ok: true, normalMode: { deployed, liveInput, pausedBefore, pausedAfter, redeployed, resumed, rejectedRedeploy } }, null, 2));
+    console.log(JSON.stringify({ ok: true, normalMode: { deployed, liveInput, pausedBefore, pausedAfter, died, respawned, ended: ended.match, redeployed, resumed, rejectedRedeploy } }, null, 2));
     await normalContext.close();
   } finally {
     await normalBrowser?.close();

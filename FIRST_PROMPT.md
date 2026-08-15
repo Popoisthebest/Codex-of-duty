@@ -1,23 +1,89 @@
-/goal Build a first-person shooter at the level of the most recent Call of Duty games. Do not stop until the game is as close as practically achievable to AAA quality and all available visual, gameplay, and performance validation has been repeatedly used to improve it.
+You are continuing an existing Three.js first-person shooter that already has substantial work invested in weapon presentation, rendering, materials, environment art, effects, AI foundations, and automated validation.
 
-I want you to build a first-person shooter at the level of the most recent Call of Duty games. It should be utterly exceptional, visually beautiful, with every single thing done at AAA quality—from textures and materials to lighting, animation, physics, gunplay, AI, audio, VFX, UI, environments, and anything else that contributes to the final game experience.
+The project currently looks much better than it plays.
 
-Use the project's AGENTS.md, ARCHITECTURE.md, GAME_SPEC.md, Skills, reviewers, playtest, screenshot, image-diff, and profiling harness throughout development.
+Your primary job now is to transform it from a polished FPS technology demo into a genuinely playable modern military FPS game.
 
-Use sub-agents aggressively for independent exploration, gameplay review, visual criticism, performance analysis, architecture review, and verification. For tightly coupled systems such as rendering, lighting, sky, exposure, materials, and viewmodel lighting, keep implementation under a sequential single owner so agents do not break each other's assumptions.
+Do not restart the project, throw away strong existing systems, or spend the first major passes on cosmetic polish.
 
-Continuously iterate on every important part of the game. After each meaningful visual pass, use a separate sub-agent as an extremely harsh visual critic. It should judge the result against the visual quality bar of a current Call of Duty game. If it does not look AAA, identify the largest visible weaknesses, determine their actual root causes, improve them, capture the result again, and repeat.
+The highest-priority target is a complete offline 6v6 Team Deathmatch vertical slice:
 
-Do the same for gameplay. Movement, aiming, ADS, recoil, firing, reloads, hit feedback, enemy behavior, animation, physics, audio, and combat flow should feel like parts of one polished game rather than independent technical features.
+- one human player plus five allied bots versus six enemy bots
+- a real pre-match → active match → victory/defeat → restart loop
+- 100-kill score limit and a sensible time limit
+- deaths, respawns, spawn selection, spawn safety, team scoring and kill feed
+- scoreboard and clear match-state UI
+- bots that traverse the map, seek combat, reposition, use cover where appropriate, die and respawn
+- a substantially larger and more tactically interesting map than a tech-demo arena
+- multiple recognizable combat zones
+- multiple routes between important areas
+- indoor and outdoor combat
+- meaningful sightline variation
+- at least two meaningful elevation bands
+- enough spawn locations and route loops that repeated deaths do not feel identical
+- fast re-entry into combat without constant spawn killing
+- continuous encounter pacing so the player is not wandering through an empty map
+- a complete match that can actually be played for several minutes and has a meaningful goal
 
-Actually run the game throughout development. Use the browser playtest, deterministic screenshots, visual review, image diff when visual output must remain unchanged, and gameplay profiling. Do not judge visual quality from code alone.
+Preserve the existing visual quality. Reuse and extend the existing environment kit rather than replacing polished work with low-quality filler.
 
-Do not optimize for benchmark numbers at the expense of the game. Performance matters because the game must feel smooth during real gameplay. Pay special attention to frame-time p95/p99, worst-frame hitches, shader compilation during gameplay, and other stalls that damage the player experience.
+The map must become larger without becoming empty. Density, landmarks, routes, cover, sightlines and encounter pacing matter more than raw square meters.
 
-Do not blindly follow critic suggestions. Treat criticism as evidence of a visible problem, investigate the root cause, and make the change that actually improves the final result even when that change is different from what the critic initially suggested.
+Treat gameplay as a first-class engineering target. Add telemetry and deterministic harness support where needed so the following can be verified rather than asserted:
 
-Keep improving the largest remaining weaknesses first. Do not stop simply because all requested systems exist. Stop only when further meaningful improvement is no longer reasonably achievable with the available environment and tools, all major validation gates have been run after the final changes, and the result is a genuinely polished playable FPS.
+- match starts correctly
+- kills change the correct team score
+- death occurs through the real damage system
+- respawn occurs through the real respawn system
+- scoreboards agree with authoritative match state
+- a match ends at the score limit
+- a winner is declared
+- restart returns to a clean new match
+- 12 combatants participate in the 6v6 match
+- the map meets the v3 scale/structure contract
+- long-running combat does not produce non-finite state, dead AI loops, or catastrophic runtime errors
 
-Do this in Three.js.
+Read and follow:
+- CLAUDE.md
+- AGENTS.md
+- ARCHITECTURE.md
+- GAME_SPEC.md
+- docs/GAMEPLAY_QUALITY_BAR.md
+- docs/GAMEPLAY_HARNESS_CONTRACT.md
+- docs/GAMEPLAY_ROADMAP.md
 
-The goal is not to reproduce Call of Duty's copyrighted maps, characters, logos, models, audio, textures, or other proprietary content. Create original game content while targeting the same class of visual fidelity, responsiveness, weapon feel, combat feedback, environmental density, and overall AAA polish.
+Use the existing visual/performance harness and the new gameplay harness.
+
+Use subagents for independent reviews. A gameplay director should harshly assess whether the result is actually fun and complete. A map director should assess traversal, route choice, sightlines, spawn flow and combat density. An AI reviewer should assess whether bots behave like participants in a match instead of target dummies. A QA reviewer should independently challenge completion claims.
+
+For tightly coupled implementation, prefer a coherent main owner over many agents editing the same systems concurrently.
+
+Do not blindly implement reviewer prescriptions. Treat reviewer comments as symptoms, inspect evidence, find the actual root cause, then fix it.
+
+Do not bypass or weaken tests to obtain green output.
+
+Use legal/original/appropriately licensed assets or procedural content when useful. Never copy proprietary Call of Duty maps, models, textures, audio, logos or UI. The target is the class of responsiveness, polish and gameplay completeness, not copied content.
+
+Required development loop:
+
+inspect
+→ define an observable gameplay acceptance target
+→ implement one coherent gameplay pass
+→ build
+→ run harness checks
+→ run gameplay checks
+→ actually play/run the game
+→ inspect screenshots/runtime evidence
+→ ask independent reviewers
+→ repair the highest-impact defects
+→ repeat
+
+Do not stop because the game launches.
+
+Do not stop because the gun looks good.
+
+Do not stop because bots can shoot.
+
+Do not stop because a large map exists.
+
+The milestone is complete only when it behaves like a real replayable 6v6 TDM match and passes the gameplay quality gates, while preserving the existing strong visual quality.

@@ -1,6 +1,7 @@
 import { DeterministicRng } from './rng.js';
 import { EventBus } from './events.js';
 import { InputState } from './input.js';
+import { runScenario } from './scenarios.js';
 
 export class Engine {
   constructor({ scene, camera, viewScene, viewCamera, canvas, config = {} }) {
@@ -84,6 +85,19 @@ export class Engine {
     }
   }
 
+  // Scenario acceleration: gameplay lives entirely in fixedUpdate, so a long
+  // soak can advance the simulation at full rate while rendering occasionally
+  // to keep view-side systems (FX, viewmodel, audio) ticking honestly.
+  simulateFrames(count, renderEvery = 12, onStep = null) {
+    const frames = Math.max(0, Math.min(200000, Math.floor(Number(count) || 0)));
+    for (let i = 0; i < frames; i += 1) {
+      this.simulateStep();
+      if (renderEvery > 0 && i % renderEvery === 0) this.renderFrame(this.fixed * renderEvery);
+      if (onStep && onStep(i) === false) return i + 1;
+    }
+    return frames;
+  }
+
   async reset({ seed = 1337, scenario = 'default', render = true } = {}) {
     const numericSeed = Number(seed);
     const resolvedSeed = Number.isFinite(numericSeed) ? numericSeed >>> 0 : 1337;
@@ -132,14 +146,45 @@ export class Engine {
       weapon: this.ctx.peek('weapons')?.snapshot?.() ?? null,
       enemiesAlive: ai?.aliveCount?.() ?? 0,
       enemies: ai?.snapshot?.() ?? [],
+      match: this.ctx.peek('match')?.snapshot?.() ?? null,
       audio: this.ctx.peek('audio')?.snapshot?.() ?? null,
       fx: this.ctx.peek('fx')?.snapshot?.() ?? null,
     };
   }
 
+  getGameplayReport() {
+    return this.ctx.get('match').getReport();
+  }
+
+  // Leaves harness shot staging and runs the real 6v6 match. Capture and
+  // scenario tools use this so they observe live gameplay, not a posed shot.
+  enterMatchMode() {
+    this.ctx.get('ai').enterMatchMode();
+    this.ctx.get('match').forceStart();
+    this.ctx.get('render').usePlayerCamera(true);
+    this.ctx.get('ui').showHud();
+    return this.snapshot();
+  }
+
+  // Capture-only spectator move: parks the player camera somewhere in the map so
+  // a live match can be photographed. It stages a pose and changes no match state.
+  stagePlayerView({ position, yaw = 0, pitch = 0 }) {
+    this.ctx.get('render').usePlayerCamera(true);
+    this.ctx.get('player').stageHarnessPose({ position, yaw, pitch, eyeHeight: 1.7, stance: 'stand' });
+    this.renderFrame(0);
+    return this.snapshot();
+  }
+
+  async runScenario(name, options = {}) {
+    return runScenario(this, name, options);
+  }
+
   async runAction(name, options = {}) {
     const frames = Math.max(1, Math.min(600, Math.floor(Number(options.frames) || 1)));
     const input = this.ctx.input;
+    // Deterministic actions probe live combat behaviour, so they run against an
+    // active match rather than spending their frame budget in the deploy count.
+    this.ctx.peek('match')?.forceStart();
     const aimAtEnemy = () => {
       const target = this.ctx.peek('ai')?.getAimPoint?.();
       if (!target) return;
@@ -286,6 +331,23 @@ export class Engine {
       input.clearVirtual();
       this.ctx.get('ai').stageFireFeedbackTest();
       this.stepFrames(frames);
+      return this.snapshot();
+    }
+    if (name === 'run_match_to_end') {
+      // Drives a live match to its end through the production score rule: the
+      // limit is lowered to just above the current leader and real combat
+      // supplies the remaining kills. Nothing writes a score or a winner.
+      input.clearVirtual();
+      const match = this.ctx.get('match');
+      const ai = this.ctx.get('ai');
+      ai.enterMatchMode();
+      match.forceStart();
+      const scores = match.getScores();
+      const target = Math.max(scores.alpha, scores.bravo) + Math.max(1, Math.floor(Number(options.remainingKills) || 2));
+      const restore = match.configureRules({ scoreLimit: target, respawnSeconds: 1.2 });
+      const budget = Math.max(600, Math.min(24000, Math.floor(Number(options.maxFrames) || 12000)));
+      for (let i = 0; i < budget && match.phase !== 'ended'; i += 60) this.stepFrames(60);
+      restore();
       return this.snapshot();
     }
     if (name === 'profile_pulse') {

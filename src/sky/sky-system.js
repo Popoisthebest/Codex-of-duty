@@ -14,16 +14,38 @@ export class SkySystem {
       fragmentShader: `varying vec3 vWorld; uniform vec3 topColor; uniform vec3 horizonColor; uniform vec3 lowerColor; uniform vec3 sunDirection; uniform vec3 sunColor; void main(){ float h=vWorld.y; float skyMix=smoothstep(-0.02,0.5,h); vec3 color=mix(horizonColor,topColor,skyMix); color=mix(lowerColor,color,smoothstep(-0.2,0.035,h)); float sun=max(dot(vWorld,sunDirection),0.0); color+=sunColor*pow(sun,900.0)*7.0+sunColor*pow(sun,24.0)*0.11; float band=exp(-abs(h)*15.0); color+=vec3(0.06,0.025,0.018)*band; gl_FragColor=vec4(color,1.0); }`,
     });
     this.sky = new THREE.Mesh(skyGeometry, skyMaterial); this.sky.renderOrder = -1000; ctx.scene.add(this.sky); this.resources.push(skyGeometry, skyMaterial);
-    this.hemi = new THREE.HemisphereLight(0x9abed7, 0x352a22, 1.52); ctx.scene.add(this.hemi);
+    // The district is roughly five times the area of the original block, and the
+    // new zones have far fewer practical lamps than the market street, so the
+    // ambient floor is lifted enough to keep combatants readable in them.
+    this.hemi = new THREE.HemisphereLight(0x9abed7, 0x352a22, 1.86); ctx.scene.add(this.hemi);
     this.sun = new THREE.DirectionalLight(0xffd3a0, 3.55); this.sun.position.set(-18, 24, -12); this.sun.target.position.set(0, 0, -3); this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048); this.sun.shadow.camera.left = -22; this.sun.shadow.camera.right = 22; this.sun.shadow.camera.top = 24; this.sun.shadow.camera.bottom = -18; this.sun.shadow.camera.near = 1; this.sun.shadow.camera.far = 70; this.sun.shadow.bias = -0.00028; this.sun.shadow.normalBias = 0.035;
+    this.sun.shadow.mapSize.set(2048, 2048); this.sun.shadow.camera.left = -17; this.sun.shadow.camera.right = 17; this.sun.shadow.camera.top = 17; this.sun.shadow.camera.bottom = -17; this.sun.shadow.camera.near = 1; this.sun.shadow.camera.far = 62; this.sun.shadow.bias = -0.00028; this.sun.shadow.normalBias = 0.035;
     ctx.scene.add(this.sun, this.sun.target);
     const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 128; const context = canvas.getContext('2d'); const gradient = context.createLinearGradient(0, 0, 0, 128);
     gradient.addColorStop(0, '#142d45'); gradient.addColorStop(0.52, '#596c76'); gradient.addColorStop(0.72, '#d18a5d'); gradient.addColorStop(1, '#2c3030'); context.fillStyle = gradient; context.fillRect(0, 0, 256, 128);
-    const env = new THREE.CanvasTexture(canvas); env.mapping = THREE.EquirectangularReflectionMapping; env.colorSpace = THREE.SRGBColorSpace; ctx.scene.environment = env; ctx.viewScene.environment = env; ctx.scene.environmentIntensity = 0.7; ctx.viewScene.environmentIntensity = 0.8; ctx.scene.fog = new THREE.FogExp2(0x354957, 0.027); this.resources.push(env);
+    const env = new THREE.CanvasTexture(canvas); env.mapping = THREE.EquirectangularReflectionMapping; env.colorSpace = THREE.SRGBColorSpace; ctx.scene.environment = env; ctx.viewScene.environment = env; ctx.scene.environmentIntensity = 0.82; ctx.viewScene.environmentIntensity = 0.8;
+    // Sightlines are far longer than the original street, so the exponential fog
+    // is thinned to keep a cross-map target visible rather than a grey wash.
+    ctx.scene.fog = new THREE.FogExp2(0x354957, 0.0138); this.resources.push(env);
+    this.sunOffset = new THREE.Vector3(-18, 24, -12);
   }
 
-  update() { this.sky.position.copy(this.ctx.camera.position); }
+  // The shadow cascade is tighter than the original fixed box (34 m at 2048 vs
+  // 44 x 42) and follows the player
+  // instead of being widened to the whole district, so the preserved market
+  // block keeps exactly the shadow resolution it had while the new zones get
+  // the same quality. Snapping to texel steps stops the map shimmering.
+  update() {
+    this.sky.position.copy(this.ctx.camera.position);
+    const focus = this.ctx.camera.position;
+    const texel = 34 / 512;
+    const x = Math.round(focus.x / texel) * texel;
+    const z = Math.round(focus.z / texel) * texel;
+    this.sun.target.position.set(x, 0, z);
+    this.sun.position.set(x + this.sunOffset.x, this.sunOffset.y, z + this.sunOffset.z);
+    this.sun.target.updateMatrixWorld();
+    this.sun.updateMatrixWorld();
+  }
   dispose() {
     this.ctx.scene.remove(this.sky, this.hemi, this.sun, this.sun.target);
     this.ctx.scene.environment = null;

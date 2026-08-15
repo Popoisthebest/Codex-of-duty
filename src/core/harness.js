@@ -6,6 +6,11 @@ export function createHarnessBridge({
   stepFrames,
   snapshot,
   runAction,
+  getGameplayReport,
+  worldMetrics,
+  runScenario,
+  stagePlayerView,
+  enterMatchMode,
   listShots,
   listScenarios,
   onReady,
@@ -54,6 +59,9 @@ export function createHarnessBridge({
     getMetrics() {
       const info = renderer?.info;
       return {
+        // World-pass counts come from the render system, which samples them
+        // before the viewmodel pass overwrites renderer.info.
+        ...(worldMetrics?.() ?? {}),
         calls: info?.render?.calls ?? null,
         triangles: info?.render?.triangles ?? null,
         programs: Array.isArray(info?.programs) ? info.programs.length : null,
@@ -67,6 +75,24 @@ export function createHarnessBridge({
         const result = await runAction?.(name, options);
         return result ?? bridge.snapshot();
       });
+    },
+
+    // v3 gameplay contract. The bridge stays at version 2 so existing v2 tools
+    // keep working; the gameplay report carries its own version.
+    getGameplayReport() {
+      return getGameplayReport?.() ?? null;
+    },
+
+    async runScenario(name, options = {}) {
+      return serialize(async () => runScenario?.(name, options));
+    },
+
+    stagePlayerView(options = {}) {
+      return stagePlayerView?.(options) ?? null;
+    },
+
+    async enterMatchMode() {
+      return serialize(async () => enterMatchMode?.() ?? null);
     },
 
     listShots() {

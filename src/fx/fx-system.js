@@ -48,6 +48,8 @@ export class FXSystem {
     this.enemyMuzzleLight = new THREE.PointLight(0xff8a38, 0, 2.4, 2); this.group.add(this.enemyMuzzleLight);
     this.enemyMuzzleLightLife = 0;
     this.enemyMuzzleEvents = 0;
+    this.impactEvents = 0;
+    this.worldImpactEvents = 0;
 
     this.decalMaterial = new THREE.MeshStandardMaterial({ color: 0x15110d, roughness: 0.95, polygonOffset: true, polygonOffsetFactor: -4, side: THREE.DoubleSide });
     this.decalMesh = new THREE.InstancedMesh(new THREE.CircleGeometry(0.07, 10), this.decalMaterial, 64);
@@ -88,7 +90,7 @@ export class FXSystem {
     this.particleMesh.instanceMatrix.needsUpdate = true;
     this.shellMesh.instanceMatrix.needsUpdate = true;
     this.enemyMuzzleMesh.instanceMatrix.needsUpdate = true;
-    this.enemyMuzzleLightLife = 0; this.enemyMuzzleLight.intensity = 0; this.enemyMuzzleEvents = 0;
+    this.enemyMuzzleLightLife = 0; this.enemyMuzzleLight.intensity = 0; this.enemyMuzzleEvents = 0; this.impactEvents = 0; this.worldImpactEvents = 0;
     this.decalCursor = 0;
     this.showcase = false;
     this.showcaseTimer = 0;
@@ -130,6 +132,8 @@ export class FXSystem {
   }
 
   onImpact(event) {
+    this.impactEvents += 1;
+    if (event.actorId == null) this.worldImpactEvents += 1;
     this.spawnImpact(event.point, event.normal, event.surface, event.surface === 'flesh' ? 5 : 11);
     if (event.surface !== 'flesh') this.spawnDecal(event.point, event.normal, event.surface);
   }
@@ -289,7 +293,7 @@ export class FXSystem {
     }
   }
 
-  snapshot() { return { enemyMuzzleEvents: this.enemyMuzzleEvents, activeEnemyMuzzles: this.enemyMuzzles.filter((flash) => flash.life > 0).length }; }
+  snapshot() { return { enemyMuzzleEvents: this.enemyMuzzleEvents, activeEnemyMuzzles: this.enemyMuzzles.filter((flash) => flash.life > 0).length, impactEvents: this.impactEvents, worldImpactEvents: this.worldImpactEvents }; }
 
   dispose() {
     this.offFired?.();

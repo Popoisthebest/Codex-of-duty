@@ -7,9 +7,16 @@ const assert = (condition, message) => {
 };
 const near = (actual, expected) => Math.abs(actual - expected) <= epsilon;
 
-async function createPhysics(colliders = []) {
+// Reference world stub implementing the broadphase contract the physics system
+// depends on. Queries return every collider, so this test exercises the physics
+// maths rather than the world's grid acceleration.
+async function createPhysics(colliders = [], platforms = []) {
   const world = {
     getColliders: () => colliders,
+    getPlatforms: () => platforms,
+    getBounds: () => ({ minX: -500, maxX: 500, minZ: -500, maxZ: 500 }),
+    queryColliders: (minX, maxX, minZ, maxZ, out) => { out.length = 0; out.push(...colliders); return out; },
+    queryRayColliders: (ox, oz, dx, dz, maxDistance, out) => { out.length = 0; out.push(...colliders); return out; },
     appendRaycastTargets: () => {},
     getCoverPoints: () => [],
     surfaceAt: () => 'concrete',

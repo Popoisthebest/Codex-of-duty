@@ -46,6 +46,13 @@ export class RenderSystem {
     this.showViewmodel = true;
   }
 
+  // Live-match capture and playback follow the player camera rather than the
+  // fixed canonical shot pose the v2 screenshot tools rely on.
+  usePlayerCamera(enabled = true) {
+    this.useCaptureCamera = !enabled;
+    this.showViewmodel = true;
+  }
+
   setShot(name, ctx) {
     const pose = SHOT_POSES[name];
     this.captureCamera.position.fromArray(pose.position);
@@ -61,6 +68,12 @@ export class RenderSystem {
     this.renderer.setRenderTarget(null);
     this.renderer.clear();
     this.renderer.render(ctx.scene, camera);
+    // renderer.info resets at the start of every render() call, so the world
+    // pass has to be sampled here. Reading it after the viewmodel pass only ever
+    // reports the gun, which makes a district look free.
+    const info = this.renderer.info.render;
+    this.worldCalls = info.calls;
+    this.worldTriangles = info.triangles;
     if (this.showViewmodel && ctx.viewScene.children.length) {
       this.renderer.clearDepth();
       this.renderer.render(ctx.viewScene, ctx.viewCamera);
@@ -103,6 +116,10 @@ export class RenderSystem {
   getMetrics() {
     const info = this.renderer.info;
     return {
+      // The world pass is sampled in lateUpdate because renderer.info resets on
+      // every render() call; `calls`/`triangles` here describe the viewmodel.
+      worldCalls: this.worldCalls ?? null,
+      worldTriangles: this.worldTriangles ?? null,
       calls: info.render.calls,
       triangles: info.render.triangles,
       programs: Array.isArray(info.programs) ? info.programs.length : null,

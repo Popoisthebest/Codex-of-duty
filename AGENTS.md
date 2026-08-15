@@ -1,312 +1,278 @@
-# Codex of Duty — Agent Operating Manual
+# Codex of Duty — Agent Operating Manual v3
 
 ## Mission
 
-`GAME_SPEC.md`를 만족하는 높은 완성도의 browser FPS를 구축한다.
+Build a high-quality browser FPS that is first and foremost a complete game.
 
-작업 완료는 코드량, 파일 수, build 성공이 아니라 실제 gameplay, visual evidence, reproducibility, performance evidence로 판단한다.
+The repository may already have excellent weapons, materials, lighting or environment art. Those are not sufficient for completion.
 
-반드시 먼저 읽는다:
+For the current milestone, gameplay completeness outranks additional cosmetic polishing.
 
-1. `ARCHITECTURE.md`
-2. `GAME_SPEC.md`
-3. `docs/QUALITY_BAR.md`
-4. 관련 source/tests/tools
+Read:
+1. `FIRST_PROMPT.md`
+2. `ARCHITECTURE.md`
+3. `GAME_SPEC.md`
+4. `docs/GAMEPLAY_QUALITY_BAR.md`
+5. `docs/GAMEPLAY_HARNESS_CONTRACT.md`
+6. relevant source/tests/tools
 
-## Core Strategy
+## Priority stack
 
-### Sequential ownership for coupled work
+Until the v3 gameplay gates pass:
 
-render, sky, material response, exposure, world lighting, viewmodel lighting처럼 서로 강하게 결합된 영역은 여러 agent가 병렬로 수정하지 않는다.
+1. match loop
+2. map layout and traversal
+3. spawn / respawn
+4. team AI participation
+5. encounter pacing
+6. scoring / win / loss / restart
+7. combat feel and readability
+8. regression-free visual quality
+9. visual polish beyond the existing baseline
 
-Main agent가 하나의 concern을 끝까지 소유해:
+Do not spend large passes on bloom, micro-material variation, weapon cosmetics or other visual details while a fundamental gameplay gate is red.
 
-```text
-measure
-→ hypothesis
-→ change
-→ capture
-→ measure
-→ decide
-```
+## Single-writer rule for coupled systems
 
-순서로 진행한다.
+Main implementation ownership should remain coherent for:
+- match state
+- team state
+- spawn system
+- AI navigation/combat integration
+- map/nav representation
+- gameplay HUD state
+- deterministic harness bridge
 
-### Parallelize read-heavy work
+Subagents are strongly encouraged for:
+- read-heavy exploration
+- gameplay criticism
+- map criticism
+- AI behavior review
+- visual regression review
+- performance analysis
+- QA audit
 
-다음은 병렬 subagent 사용이 적합하다.
+Avoid multiple agents concurrently editing tightly coupled gameplay state.
 
-- architecture exploration
-- visual criticism
-- performance report analysis
-- verification audit
-- gameplay flaw review
-
-코드 writer는 기본적으로 main agent 하나다.
-
-## Work Modes
-
-요청을 다음 중 하나로 분류한다.
-
-- foundation
-- gameplay
-- rendering
-- visual polish
-- performance
-- bug fix
-- verification
-- final pass
-
-한 pass 안에서 목적을 과도하게 섞지 않는다.
-
-## Required Development Loop
+## Required loop
 
 ### 1. Inspect
 
-- 현재 repo status 확인
-- architecture contract 읽기
-- 관련 subsystem 경로 확인
-- 기존 tools와 harness 상태 확인
-- 필요한 경우 `fps_explorer` 사용
+- `git status`
+- relevant recent changes
+- current architecture
+- current harness behavior
+- existing screenshots / profiles / reports
+- current actual gameplay
 
 ### 2. Define acceptance
 
-사용자 요청을 observable outcome으로 변환한다.
+Every pass must have observable success conditions.
 
-예:
+Bad:
+`make the map better`
 
-```text
-"총 느낌을 더 좋게"
-```
+Good:
+- add two route loops between central and flank zones
+- create two indoor/outdoor transitions
+- add spawn-safe access from both team ends
+- keep first-contact time within target without exposing direct spawn-to-spawn sightlines
 
-를 바로 코딩하지 않는다.
+### 3. Implement a coherent vertical change
 
-다음처럼 분해한다.
+Prefer a complete gameplay path over broad unfinished scaffolding.
 
-```text
-- ADS sight picture 안정
-- recoil recovery 명확
-- muzzle transient readable
-- reload state와 ammo state 일치
-- weapon/world luminance imbalance 없음
-```
+Example:
+`death → respawn selection → safe spawn → HUD reset → AI reacquisition`
 
-### 3. Implement
-
-- 가장 작은 complete vertical change
-- architecture boundary 유지
-- temporary placeholder가 최종 path에 남지 않음
-- 외부 art asset 금지
-- runtime dependency 추가 금지
-- deterministic harness를 깨뜨리지 않음
+is better than partially touching five unrelated systems.
 
 ### 4. Build
-
-항상:
 
 ```bash
 npm run build
 ```
 
-실패하면 다음 단계로 가지 않는다.
-
-### 5. Harness contract
+### 5. Existing deterministic contract
 
 ```bash
 npm run harness:check
 ```
 
-`window.__COD_HARNESS__`가 정상인지 확인한다.
+Never weaken deterministic/reset checks to hide defects.
 
-### 6. Gameplay smoke test
-
-gameplay 관련 변경:
+### 6. Existing smoke playtest
 
 ```bash
 npm run harness:playtest
 ```
 
-사용자 입력, movement, fire, ADS, reload, console/runtime failure를 확인한다.
+### 7. Gameplay contract
 
-### 7. Visual capture
-
-visual 변경:
+For match/gameplay changes:
 
 ```bash
-npm run harness:baseline
+npm run gameplay:check
 ```
 
-또는 빠른 review:
+For map/layout changes:
 
 ```bash
-npm run harness:shotset
+npm run gameplay:map-audit
 ```
 
-실제 screenshot을 직접 열어 확인한다.
+### 8. Real play/run
 
-"코드상 좋아 보인다"는 visual verification이 아니다.
+Automated state checks do not prove fun.
 
-### 8. Visual critic
+Actually run the game. Observe:
+- time to first meaningful combat
+- downtime after respawn
+- spawn deaths
+- route choice
+- sightline variety
+- map landmark readability
+- bot density
+- team movement
+- repetitive combat patterns
+- whether the player understands how to win
 
-중요 visual pass에는 `visual_critic`을 사용한다.
+### 9. Independent review
 
-critic에게 솔루션을 강제로 따르지 않는다.
-critic의 지적을 현상으로 취급하고 main agent가 root cause를 다시 측정한다.
+Use:
+- `gameplay-director`
+- `map-director`
+- `ai-director`
+- `qa-auditor`
 
-### 9. Performance
+As needed:
+- `combat-designer`
+- `visual-critic`
+- `performance-analyst`
 
-render/world/AI/physics/FX 변경 후 성능 위험이 있으면:
+Reviewers should report symptoms and evidence. Main agent diagnoses root cause.
 
-```bash
-npm run harness:profile
-```
+### 10. Repair and rerun
 
-median FPS 하나로 판단하지 않는다.
+After fixes, rerun the full relevant gates.
 
-반드시:
-- frame ms p50
-- p95
-- p99
-- worst
+A local targeted test is not final evidence.
+
+## Gameplay milestone: 6v6 TDM
+
+The player counts as one member of a six-person team.
+
+Target:
+- human + 5 allied bots
+- 6 enemy bots
+- score limit 100
+- time limit
+- authoritative match state
+- kill / death attribution
+- respawn
+- scoreboard
+- kill feed
+- match end
+- winner
+- clean restart
+
+The bots must be match participants, not decoration.
+
+## Map rule
+
+"Make the map larger" does not mean scaling coordinates or adding empty streets.
+
+A successful map adds:
+- recognizable zones
+- interconnected routes
+- flanking choices
+- sightline variation
+- cover rhythm
+- indoor/outdoor transition
+- vertical options
+- spawn depth
+- route loops
+- navigation landmarks
+
+Avoid one-room arenas, one-corridor streets and long empty travel.
+
+## Encounter pacing
+
+The player should not regularly wander for long stretches without a plausible combat decision.
+
+Conversely, spawning into unavoidable fire is also failure.
+
+Optimize:
+- first-contact time
+- respawn-to-contact time
+- route diversity
+- fight duration
+- recovery opportunities
+- spawn safety
+
+Do not optimize "constant action" into chaotic spawn killing.
+
+## AI rule
+
+AI should:
+- navigate intentionally
+- seek useful positions
+- acquire enemies
+- engage at sensible ranges
+- break line of sight when appropriate
+- reposition rather than freeze
+- avoid permanent deadlocks
+- die and respawn
+- contribute to team score
+- spread through the map instead of forming one permanent blob
+
+Perfect human imitation is not required for the first milestone. Match participation is.
+
+## Harness truthfulness
+
+Do not satisfy `getGameplayReport()` or `runScenario()` by fabricating metrics unrelated to production systems.
+
+Harness scenarios must exercise the same authoritative game systems used during normal gameplay, with deterministic input/control replacing only user timing and randomness where necessary.
+
+Do not mutate final score directly to simulate a kill.
+Do not toggle `dead=true` directly to claim the damage pipeline works.
+Do not return hard-coded pass values.
+
+## Visual preservation
+
+Existing strong visual work is an asset.
+
+Gameplay expansion may reuse kits, modular geometry, materials and lighting.
+
+Do not replace polished areas with huge amounts of visibly inferior filler merely to satisfy map scale.
+
+When gameplay gates are green, resume aggressive visual refinement.
+
+## Performance
+
+A larger map and 12 active combatants create new performance risks.
+
+Track:
+- p50 / p95 / p99 frame time
+- worst frame
 - long frames
-- program count 변화
 - draw calls
 - triangles
+- shader/program growth
+- AI update cost
+- boot/load time
 
-를 본다.
+Use LOD, instancing, spatial partitioning, AI update scheduling, pooling and visibility control where justified.
 
-`performance_analyst`에게 측정 결과를 분석시킬 수 있다.
+Never "optimize" by making gameplay empty.
 
-### 10. Diff gate
+## Completion rule
 
-성능 최적화나 refactor가 "시각 결과를 바꾸면 안 되는" 작업이라면:
+The project is not complete when:
+- it builds
+- it looks impressive in screenshots
+- the weapon feels good
+- four enemies can shoot
+- the player can walk around a large environment
 
-```bash
-npm run harness:diff -- <before-dir> <after-dir>
-```
-
-pixel 변화가 있으면 최적화가 pixel-neutral이라는 주장을 하지 않는다.
-
-### 11. Independent audit
-
-큰 변경 후:
-- `gameplay_reviewer`
-- `verification_auditor`
-
-필요 시:
-- `visual_critic`
-- `performance_analyst`
-- `architecture_reviewer`
-
-를 사용한다.
-
-### 12. Repair
-
-실제 finding을 main agent가 수정한다.
-
-수정 후 affected test만 돌리고 끝내지 않는다.
-최종적으로 전체 relevant gate를 다시 실행한다.
-
-## Root-Cause Rule
-
-reviewer가 해결책을 제안해도 사실로 취급하지 않는다.
-
-예:
-
-```text
-weapon이 flat하다
-```
-
-라는 현상에 대해 곧바로 texture contrast를 높이지 않는다.
-
-가능한 원인:
-- lighting energy imbalance
-- roughness
-- F0/specular dominance
-- exposure
-- normal scale
-- viewmodel composite
-- actual texture detail
-
-를 측정해서 root cause를 찾는다.
-
-brief와 반대되는 수정이 맞을 수 있다.
-
-## Performance Rules
-
-- hot path allocation 최소화
-- shader compile during play 추적
-- draw call 증가를 측정
-- triangle 증가는 근거가 있어야 함
-- 큰 effect는 quality preset budget 안에서 구현
-- p99/worst frame 악화가 큰 경우 평균 FPS 개선만으로 성공 판정 금지
-- mobile optimization보다 우선 target은 desktop browser이지만 catastrophic scaling을 만들지 않음
-
-## Visual Rules
-
-- flat primitive look 금지
-- 모든 주요 surface는 material variation을 가짐
-- repetition 숨기기
-- edge/crevice/weathering detail
-- readable key light + fill/bounce approximation + contact cue
-- physically implausible albedo로 lighting bug를 보정하지 않음
-- weapon은 화면에서 가장 오래 보이는 object이므로 특별히 높은 품질 기준 적용
-- hands/grip silhouette는 close shot에서 별도 검토
-- VFX가 world material/lighting을 덮어 버리지 않게 함
-
-## Gameplay Rules
-
-- input latency를 불필요하게 추가하지 않음
-- camera effect가 aim을 망가뜨리지 않음
-- movement state transition이 명확
-- ammo/reload/fire state race 방지
-- hitmarker는 실제 player/enemy damage semantic과 일치
-- AI의 combat action은 플레이어에게 readable해야 함
-- enemy death와 physics/visual state가 분리되어 유령 collider를 남기지 않음
-
-## Determinism Rules
-
-Harness mode:
-- `Math.random()` 금지
-- wall clock visual state 금지
-- named shot마다 fresh reset
-- capture마다 같은 seed
-- `stepFrames`로 settle
-- baseline shot끼리 state 공유 금지
-
-일반 gameplay mode는 실시간 실행이 가능하지만 harness mode contract를 절대 깨지 않는다.
-
-## Subagents
-
-### `fps_explorer`
-읽기 전용으로 execution path와 coupling을 파악한다.
-
-### `architecture_reviewer`
-contract violation과 hidden coupling을 찾는다.
-
-### `gameplay_reviewer`
-movement, weapon, AI, combat state bug를 검토한다.
-
-### `visual_critic`
-screenshot evidence를 기준으로 adversarial visual critique를 한다.
-
-### `performance_analyst`
-profile 숫자와 hitch 원인을 분석한다.
-
-### `verification_auditor`
-테스트와 harness가 실제 요구를 증명하는지 확인한다.
-
-## Completion Gate
-
-`docs/QUALITY_BAR.md`를 따른다.
-
-최종 답변에는:
-- 구현한 것
-- 실제 실행한 gate
-- 성능 측정값
-- visual/runtime 확인 여부
-- 남은 known limitation
-
-만 간결하게 보고한다.
-
-실행하지 않은 검증을 실행했다고 말하지 않는다.
+The gameplay milestone is complete when a user can launch the game, understand the goal, play a coherent 6v6 TDM match, die and re-enter combat, see score progression, reach a real victory/defeat state, restart, and want to play another round.

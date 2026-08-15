@@ -1,207 +1,301 @@
-# Codex of Duty — Game Specification
+# Codex of Duty — Game Specification v3
 
-## Product Goal
+## Product goal
 
-브라우저 안에서 실행되는 modern military first-person shooter vertical slice를 만든다.
+Create an original modern military browser FPS in Three.js whose quality is judged by the combination of:
 
-목표는 특정 상용 게임의 콘텐츠를 복제하는 것이 아니다.
-현대 AAA FPS에서 기대하는 반응성, 조작의 무게감, 재료 표현, 조명, 전투 피드백, 공간 밀도와 시스템 통합 수준을 품질 기준으로 삼는다.
+- responsive controls
+- convincing weapon handling
+- strong rendering/material/audio feedback
+- intelligent-enough combatants
+- readable combat spaces
+- a complete replayable match loop
 
-## Experiment Constraint
+The goal is not to reproduce proprietary Call of Duty content.
 
-기본 비교 실험 조건:
+## Current primary mode
 
-- WebGL2
-- Three.js
-- external art asset 없음
-- image/model/HDRI/audio 파일 없음
-- network runtime fetch 없음
-- texture, mesh, animation, environment, sound는 runtime code에서 procedural generation
-- runtime dependency는 `three` 하나
-- build/test 도구는 devDependency로 허용
-- offline gameplay 가능
+### Offline 6v6 Team Deathmatch
 
-이 제약은 Codex와 다른 agent harness의 순수 코드 생성 능력을 비교하기 위한 것이다.
+Team A:
+- 1 human player
+- 5 allied bots
 
-## Playable Slice
+Team B:
+- 6 enemy bots
 
-최종 vertical slice에는 최소 다음이 있어야 한다.
+Default rules:
+- score limit: 100 kills
+- time limit: 10 minutes
+- clean pre-match state
+- active match
+- victory / defeat
+- restart/rematch
 
-### Player
+The exact UI treatment may evolve, but the authoritative state must exist.
 
-- WASD movement
+## Match systems
+
+Required:
+- teams
+- rosters
+- match phase
+- match clock
+- score limit
+- team scores
+- kill attribution
+- death attribution
+- kill feed
+- scoreboard
+- match winner
+- end state
+- clean restart
+
+UI and simulation must use the same authoritative match state.
+
+## Spawn / respawn
+
+Required:
+- multiple spawn candidates per team
+- spatial separation from active enemies
+- avoid direct enemy line-of-sight where practical
+- avoid repeatedly selecting one point
+- death → respawn delay → spawn
+- player state reset
+- weapon state reset
+- AI state reset/re-entry
+- brief protection or equivalent anti-spawn-kill logic if needed
+
+A player should re-enter meaningful combat quickly without being repeatedly killed at spawn.
+
+## Map target
+
+Build a medium-scale original urban combat map.
+
+Automated floor for the v3 milestone:
+- playable width >= 80 m
+- playable depth >= 80 m
+- playable area estimate >= 7,000 m²
+- >= 5 recognizable combat zones
+- >= 3 primary route families
+- >= 2 route loops
+- >= 2 meaningful elevation bands
+- >= 12 spawn points/candidates total
+- >= 4 navigation landmarks
+- >= 2 indoor combat zones
+- >= 2 outdoor combat zones
+- >= 2 indoor/outdoor transitions
+
+These numbers are a minimum anti-tech-demo gate, not a guarantee of good design.
+
+The map must not be made artificially large with empty space.
+
+## Map design qualities
+
+Aim for:
+- recognizable zone identity
+- readable spawn ends
+- central conflict areas
+- at least one meaningful flank on both sides
+- route intersections with tactical choices
+- short/medium/long engagement opportunities
+- cover chains rather than random clutter
+- vertical sightline changes
+- safe-ish recovery pockets
+- no obvious permanent spawn-to-spawn kill lane
+- landmark-based navigation
+
+## Player
+
+Required:
+- WASD
 - mouse look
 - sprint
 - crouch
 - jump
-- lean
-- smooth acceleration/deceleration
-- head/camera motion that supports gameplay without excessive nausea
-- collision-safe movement
-- health and damage response
-
-### Weapon
-
-최소 하나의 완성도 높은 rifle을 구현한다.
-
-필수:
-- fire
-- recoil
-- muzzle response
-- ADS
-- reload
-- ammo state
-- hit feedback
-- ballistic travel or a clearly defined fast projectile model
-- surface-aware impact response
-
-총기 시각 표현은 단순 box primitive 조합에서 멈추지 않는다.
-실루엣, 재료 분리, mechanical detail, sight picture, hand placement를 반복 개선한다.
-
-### Combat AI
-
-- enemy perception
-- navigation
-- basic cover/reposition behavior
-- aiming/firing
-- damage/death
-- deterministic-enough harness scenario
-
-AI가 단순히 정지한 target dummy로 보이지 않아야 한다.
-
-### Environment
-
-한 개의 밀도 높은 urban combat block 또는 market/street environment를 만든다.
-
-- indoor/outdoor transition
-- cover geometry
-- recognizable navigation landmarks
-- varied elevation or sightlines
-- repeated kit를 숨기는 variation
+- lean where useful
+- responsive acceleration/deceleration
 - collision
-- gameplay-readable routes
+- health/damage/death
+- respawn
+- movement and camera feedback that support aiming
 
-### Rendering
+Optional/high-value:
+- slide
+- mantle/vault
+- tactical sprint
 
-품질 방향:
+Only add movement mechanics when they are reliable and improve map flow.
 
-- HDR internal lighting pipeline
-- stable shadows
-- ambient/contact depth cues
-- physically plausible PBR ranges
-- atmospheric depth
-- temporal stability
-- bloom/exposure/grade where justified
-- high-quality first-person weapon presentation
+## Weapons
 
-모든 고급 효과는 실제 frame-time 비용을 측정한다.
-효과 자체가 gameplay를 망가뜨리면 품질 향상이 아니다.
+Preserve and improve the existing high-quality rifle path.
 
-### Materials
-
-procedural surface는 최소:
-- base color variation
-- roughness variation
-- normal/height detail
-- scale-aware close-range detail
-
-를 가져야 한다.
-
-다양한 concrete, plaster, asphalt, metal, wood, glass, fabric 계열을 제공한다.
-
-### FX
-
-- muzzle flash
-- tracer or projectile visualization
-- impact particles
-- decals
-- shell or equivalent weapon feedback
-- smoke/dust where appropriate
-- damage feedback
-
-모든 action은 시각/오디오/카메라 중 적절한 피드백 조합을 가져야 한다.
-
-### Audio
-
-Web Audio API로 합성한다.
-
-- weapon transient/body/tail
-- footsteps
-- impacts
-- reload/mechanical layer
-- environmental space/reverb approximation
-- spatialization
-- occlusion approximation when practical
-
-외부 audio file은 사용하지 않는다.
-
-### UI
-
-- crosshair
+Required:
+- fire
+- ADS
+- recoil
+- reload
 - ammo
-- health or damage state
-- hit confirmation
-- simple compass/minimap or equivalent navigation cue
-- kill/engagement feedback
-- pause/help controls
+- hit response
+- damage
+- kill attribution
+- surface impact feedback
 
-## Controls
+Weapon feedback should integrate with match feedback.
 
-기본:
+A second weapon/loadout is lower priority than completing the match loop.
 
-```text
-WASD      move
-Mouse     aim
-LMB       fire
-RMB       ADS
-R         reload
-Shift     sprint
-Ctrl/C    crouch
-Space     jump
-Q/E       lean
-Esc       release pointer lock / pause
-```
+## Team combat AI
 
-실제 구현에서 충돌하면 UI에 표시되는 최종 controls와 일치시킨다.
+All 11 bots should be actual match participants.
 
-## Determinism
+Required:
+- team affiliation
+- navigation
+- target selection
+- perception
+- firing
+- damage/death
+- respawn
+- team scoring
+- repositioning
+- basic use of cover or line-of-sight breaks
+- anti-stuck recovery
 
-Harness mode에서는 재현성이 일반 gameplay보다 우선한다.
+Desired:
+- lane/zone preference
+- local tactical spread
+- flanking
+- support spacing
+- sensible engagement distance
+- pressure/recovery rhythm
 
-- seedable RNG 사용
-- capture mode에서 wall-clock 기반 animation 금지
-- fixed-step 또는 harness frame stepping 지원
-- named shot은 동일 seed/state에서 같은 결과를 만들어야 함
-- screenshot에 영향을 주는 transient state를 shot 간 공유하지 않음
+Avoid:
+- stationary target-dummy behavior
+- permanent clustering
+- spawn camping loops
+- every bot taking exactly the same path
+- globally omniscient targeting
+
+## Encounter pacing
+
+Target qualitative behavior:
+- meaningful contact shortly after spawning
+- limited empty wandering
+- enough recovery time to make decisions
+- repeated route choice
+- fights in multiple zones rather than one permanent kill box
+
+Telemetry should record:
+- first-contact time
+- respawn-to-contact time
+- kills by zone
+- spawn deaths
+- bot stuck time
+- active engagement count
+- per-zone population where practical
+
+Do not treat one target number as universal truth. Use telemetry to find obvious pacing failures.
+
+## UI
+
+Required:
+- crosshair
+- health/damage state
+- ammo
+- score
+- match clock
+- team score
+- kill feed
+- death/respawn feedback
+- scoreboard
+- victory/defeat
+- restart/rematch
+- compact navigation cue (compass/minimap/equivalent)
+
+The player must understand the match objective without reading source code.
+
+## Audio
+
+Preserve existing audio work.
+
+Gameplay-critical cues:
+- player weapon
+- enemy/allied weapon distinction where practical
+- impacts
+- footsteps
+- reload
+- damage/death
+- kill confirmation
+- match start/end
+- UI score/state cues
+
+External assets may be used only if lawfully licensed/allowed and documented.
+
+## Visuals
+
+Existing visual fidelity must not regress badly due to gameplay expansion.
+
+New map areas should reuse a coherent modular material/prop kit.
+
+Prefer fewer high-quality coherent zones over a huge low-detail landscape.
+
+## Content/IP rule
+
+Allowed:
+- original content
+- procedural content
+- user-created content
+- appropriately licensed assets/libraries when they materially improve the game
+
+Not allowed:
+- copied Call of Duty maps
+- ripped models/textures/audio
+- copied logos/trademarks
+- copied UI artwork
+- proprietary game data
+
+## Deterministic harness
+
+Harness mode must support:
+- seeded/resettable simulation
+- fixed or explicitly stepped frames
+- stable named states
+- production match logic
+- production death/respawn logic
+- production team scoring logic
+- deterministic scenario runners for QA
+
+Harness-only control may inject deterministic inputs/events, but may not fake pass results.
 
 ## Performance
 
-개발 시 성능 기준은 hardware-dependent이므로 절대 FPS 하나만 pass/fail로 고정하지 않는다.
+Desktop browser is the primary target.
 
-반드시 기록:
-- frame time p50
-- p95
-- p99
-- worst frame
-- long frames count
-- renderer program count when available
-- draw calls/triangles when available
-- boot-to-ready time
+Report:
+- frame p50/p95/p99/worst
+- long frames
+- draw calls
+- triangles
+- renderer programs
+- AI cost where practical
+- active actor count
+- boot-to-ready
 
-최종 최적화에서는 median보다 hitch와 tail latency를 우선적으로 본다.
+The 12-player match should remain responsive.
 
-## Quality Strategy
+## Development order
 
-순서:
-
-1. functional skeleton
-2. tactile gameplay
-3. visual hierarchy
-4. material/world richness
-5. combat readability
-6. deterministic capture
-7. tail-latency performance
-8. adversarial visual review
-9. focused repair passes
-
-기능, 그래픽, 성능을 한 번에 무질서하게 수정하지 않는다.
+1. preserve current working visual baseline
+2. authoritative match/team systems
+3. 6v6 actor lifecycle
+4. death/respawn/spawn safety
+5. map expansion and route structure
+6. navigation and team AI participation
+7. HUD/score/end/restart
+8. encounter pacing
+9. gameplay automated gates
+10. actual playability review
+11. performance repair
+12. renewed visual/animation/audio polish

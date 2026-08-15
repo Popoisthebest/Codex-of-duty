@@ -38,7 +38,22 @@ export class WeaponSystem {
     this.right = new THREE.Vector3();
     this.up = new THREE.Vector3();
     this.buildViewmodel(ctx);
+    // Re-entering the match issues a fresh loadout; a respawn must not hand the
+    // player back a half-empty magazine or an interrupted reload.
+    this.respawnOff = ctx.events.on('player:respawned', () => this.resetLoadout());
     await this.reset(ctx);
+  }
+
+  resetLoadout() {
+    this.ammo = this.magSize;
+    this.reserve = 120;
+    this.reloading = false;
+    this.reloadTimer = 0;
+    this.fireCooldown = 0;
+    this.ads = false;
+    this.adsBlend = 0;
+    this.recoilPitch = 0;
+    this.recoilYaw = 0;
   }
 
   buildViewmodel(ctx) {
@@ -233,7 +248,8 @@ export class WeaponSystem {
     this.up.set(0, 1, 0).applyQuaternion(ctx.camera.quaternion);
     this.direction.addScaledVector(this.right, this.rng.range(-spread, spread));
     this.direction.addScaledVector(this.up, this.rng.range(-spread, spread)).normalize();
-    const result = ctx.get('physics').fireHitscan({ origin: this.origin, direction: this.direction, maxDistance: 90, damage: 34 });
+    const result = ctx.get('physics').fireHitscan({ origin: this.origin, direction: this.direction, maxDistance: 90, damage: 34, source: 'player', sourceTeam: player.team });
+    ctx.peek('match')?.reportShot();
     player.applyRecoil(vertical, horizontal);
     this.recoilPitch += 0.035;
     this.recoilYaw += horizontal * 2.2;
@@ -319,6 +335,7 @@ export class WeaponSystem {
   }
 
   dispose() {
+    this.respawnOff?.();
     this.ctx.viewScene.remove(this.group, ...this.viewLights);
     for (const resource of this.resources) resource.dispose?.();
   }

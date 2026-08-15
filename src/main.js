@@ -3,6 +3,7 @@ import { Engine } from './core/engine.js';
 import { createHarnessBridge } from './core/harness.js';
 import { RenderSystem } from './render/render-system.js';
 import { WorldSystem } from './world/world-system.js';
+import { MatchSystem } from './match/match-system.js';
 import { PlayerSystem } from './player/player-system.js';
 import { PhysicsSystem } from './physics/physics-system.js';
 import { WeaponSystem } from './weapons/weapon-system.js';
@@ -32,6 +33,7 @@ engine
   .register(new SkySystem())
   .register(new WorldSystem())
   .register(new PhysicsSystem())
+  .register(new MatchSystem())
   .register(new PlayerSystem())
   .register(new WeaponSystem())
   .register(new AISystem())
@@ -62,8 +64,13 @@ createHarnessBridge({
   stepFrames: (count) => engine.stepFrames(count),
   snapshot: () => engine.snapshot(),
   runAction: (name, options) => engine.runAction(name, options),
+  getGameplayReport: () => engine.getGameplayReport(),
+  worldMetrics: () => render.getMetrics(),
+  runScenario: (name, options) => engine.runScenario(name, options),
+  stagePlayerView: (options) => engine.stagePlayerView(options),
+  enterMatchMode: () => engine.enterMatchMode(),
   listShots: () => engine.listShots(),
-  listScenarios: () => ['default', 'contract-check', 'playtest', 'profile'],
+  listScenarios: () => ['default', 'contract-check', 'playtest', 'profile', 'tdm-core', 'combat-soak'],
   bootstrap: async ({ seed, scenario, shot }) => {
     if (!engine.listShots().includes(shot)) throw new Error(`Unknown canonical shot: ${shot}`);
     await engine.reset({ seed, scenario, render: false });
