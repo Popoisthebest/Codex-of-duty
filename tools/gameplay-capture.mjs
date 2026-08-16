@@ -10,6 +10,16 @@ const OUT = path.join(ARTIFACTS, process.argv[2] ?? 'gameplay-capture');
 // [name, position, yaw, pitch, warmup seconds]
 const VIEWS = [
   ['alpha-staging', [0, 0, 34], Math.PI, -0.08, 4],
+  // Visual-critic repro points for the shadow-cascade seam: two cameras 8 m
+  // apart in the junction, and a staging walk that showed a hard lighting edge.
+  ['seam-junction-a', [0, 0, -30], 0, -0.02, 5],
+  ['seam-junction-b', [0, 0, -38], 0, -0.02, 6],
+  ['seam-staging', [-30, 0, 28], Math.PI, -0.04, 7],
+  ['seam-perimeter', [-44, 0, 0], -Math.PI / 2, 0.0, 8],
+  // Visual-critic symptom report: "floating blue-grey slats" and a hard dark
+  // trapezoid with no geometry behind it.
+  ['westyard-south', [-35, 0, -30], Math.PI, 0.02, 9],
+  ['westyard-containers', [-24, 0, -33], -Math.PI / 2, 0.03, 10],
   ['market-spine-north', [0, 0, 14], Math.PI, 0.0, 6],
   ['market-spine-south', [0, 0, -8], 0, 0.0, 8],
   ['market-arch', [0, 0, -16], 0, 0.05, 10],

@@ -19,7 +19,7 @@ export class SkySystem {
     // ambient floor is lifted enough to keep combatants readable in them.
     this.hemi = new THREE.HemisphereLight(0x9abed7, 0x352a22, 1.86); ctx.scene.add(this.hemi);
     this.sun = new THREE.DirectionalLight(0xffd3a0, 3.55); this.sun.position.set(-18, 24, -12); this.sun.target.position.set(0, 0, -3); this.sun.castShadow = true;
-    this.sun.shadow.mapSize.set(2048, 2048); this.sun.shadow.camera.left = -17; this.sun.shadow.camera.right = 17; this.sun.shadow.camera.top = 17; this.sun.shadow.camera.bottom = -17; this.sun.shadow.camera.near = 1; this.sun.shadow.camera.far = 62; this.sun.shadow.bias = -0.00028; this.sun.shadow.normalBias = 0.035;
+    this.sun.shadow.mapSize.set(4096, 4096); this.sun.shadow.camera.left = -46; this.sun.shadow.camera.right = 46; this.sun.shadow.camera.top = 46; this.sun.shadow.camera.bottom = -46; this.sun.shadow.camera.near = 1; this.sun.shadow.camera.far = 130; this.sun.shadow.bias = -0.00028; this.sun.shadow.normalBias = 0.035;
     ctx.scene.add(this.sun, this.sun.target);
     const canvas = document.createElement('canvas'); canvas.width = 256; canvas.height = 128; const context = canvas.getContext('2d'); const gradient = context.createLinearGradient(0, 0, 0, 128);
     gradient.addColorStop(0, '#142d45'); gradient.addColorStop(0.52, '#596c76'); gradient.addColorStop(0.72, '#d18a5d'); gradient.addColorStop(1, '#2c3030'); context.fillStyle = gradient; context.fillRect(0, 0, 256, 128);
@@ -30,15 +30,18 @@ export class SkySystem {
     this.sunOffset = new THREE.Vector3(-18, 24, -12);
   }
 
-  // The shadow cascade is tighter than the original fixed box (34 m at 2048 vs
-  // 44 x 42) and follows the player
+  // The cascade must cover what the player can see and shoot. A 17 m box on a map
+  // with 42 m sight range left ~60% of visible geometry outside the shadow
+  // frustum rendering FULLY LIT, producing a hard straight-edged lighting seam
+  // that slid across the world as the player walked. It is now 92 m wide at 4096
+  // (2.2 cm/texel, matching the original 44 m at 2048) and follows the player
   // instead of being widened to the whole district, so the preserved market
   // block keeps exactly the shadow resolution it had while the new zones get
   // the same quality. Snapping to texel steps stops the map shimmering.
   update() {
     this.sky.position.copy(this.ctx.camera.position);
     const focus = this.ctx.camera.position;
-    const texel = 34 / 512;
+    const texel = 92 / 1024;
     const x = Math.round(focus.x / texel) * texel;
     const z = Math.round(focus.z / texel) * texel;
     this.sun.target.position.set(x, 0, z);

@@ -52,6 +52,10 @@ const NAV_CLEARANCE = 0.44;
 const NAV_STEP_UP = 0.46;
 const ACTOR_HEIGHT = 1.72;
 const GRID_CELL = 5;
+// Forward rendering evaluates every scene light per fragment. Eight is enough
+// to cover the lamps visible from any one place in this district.
+const ACTIVE_POINT_LIGHTS = 6;
+const LIGHT_CULL_MARGIN = 2;
 
 export class WorldSystem {
   static id = 'world';
@@ -61,13 +65,14 @@ export class WorldSystem {
     this.ctx = ctx; this.scene = ctx.scene; this.materials = ctx.get('materials');
     this.group = new THREE.Group(); this.group.name = 'Sable district combat map'; this.scene.add(this.group);
     this.colliders = []; this.raycastTargets = []; this.resources = new Set(); this.lights = []; this.geometryCache = new Map();
-    this.platforms = []; this.surfaceRects = []; this.landmarks = []; this.transitions = []; this.spawnPoints = []; this.navLinks = [];
+    this.platforms = []; this.surfaceRects = []; this.landmarks = []; this.transitions = []; this.spawnPoints = []; this.navLinks = []; this.lightEmitters = [];
     this.batchKey = 'market';
     this.coverPoints = [[-2.6, -2.58], [3.0, -1.25], [0.4, -5.72], [-2.9, -11.55], [1.8, -11.55], [-4.75, -6.65]];
     this.buildGround(); this.buildArchitecture(); this.buildInteriorShop(); this.buildMarket(); this.buildStreetDetails(); this.buildLandmarks();
     this.buildPerimeter();
     this.buildWestYard(); this.buildDepot(); this.buildEastTerrace(); this.buildOffices(); this.buildNorthJunction(); this.buildDeploymentYards();
     this.buildDistantSkyline();
+    this.buildLightPool();
     this.buildColliderGrid();
     this.buildNavigation();
     this.buildSpawnPoints();
@@ -88,13 +93,52 @@ export class WorldSystem {
   box(size, position, material, { collision = false, surface = 'concrete', rotation = null, bevel = false, minY = null, walkable = false, cast = true, raycast = true } = {}) {
     const key = `box:${size.join(',')}:${bevel ? 1 : 0}`;
     let geometry = this.geometryCache.get(key);
-    if (!geometry) { geometry = bevel ? new THREE.BoxGeometry(...size, 2, 2, 2) : new THREE.BoxGeometry(...size); this.geometryCache.set(key, geometry); }
+    if (!geometry) {
+      geometry = bevel ? new THREE.BoxGeometry(...size, 2, 2, 2) : new THREE.BoxGeometry(...size);
+      WorldSystem.scaleBoxUvs(geometry, size);
+      this.geometryCache.set(key, geometry);
+    }
     const mesh = new THREE.Mesh(geometry, material); mesh.position.fromArray(position); if (rotation) mesh.rotation.set(...rotation); this.add(mesh, { surface, cast, raycast });
     if (collision) {
       const top = position[1] + size[1] * 0.5;
       this.solid(position[0] - size[0] * 0.5, position[0] + size[0] * 0.5, position[2] - size[2] * 0.5, position[2] + size[2] * 0.5, minY == null ? 0 : minY, top, surface, walkable);
     }
     return mesh;
+  }
+
+  // Material UV `repeat` is per material, but box UVs run 0..1 per face whatever
+  // the face measures, so one tile stretched across a 100 x 9 m perimeter wall
+  // exactly as it did across a 2 m crate. Scaling per face by its own dimensions
+  // keeps texel density constant. The geometry cache is keyed by size, so this
+  // is paid once per distinct box.
+  static scaleBoxUvs(geometry, [w, h, d], metresPerTile = 2.2) {
+    const uv = geometry.attributes.uv;
+    if (!uv) return;
+    // BoxGeometry group order: +X, -X, +Y, -Y, +Z, -Z.
+    const spans = [[d, h], [d, h], [w, d], [w, d], [w, h], [w, h]];
+    // geometry.groups index into the index buffer, not the vertex buffer.
+    // BoxGeometry emits equal per-face vertex blocks in group order, so the
+    // vertex partition is what maps a UV back to its face.
+    const perFace = uv.count / 6;
+    if (!Number.isInteger(perFace)) return;
+    for (let g = 0; g < 6; g += 1) {
+      const [su, sv] = spans[g];
+      const scaleU = Math.max(0.05, su / metresPerTile);
+      const scaleV = Math.max(0.05, sv / metresPerTile);
+      for (let i = g * perFace; i < (g + 1) * perFace; i += 1) {
+        uv.setXY(i, uv.getX(i) * scaleU, uv.getY(i) * scaleV);
+      }
+    }
+    uv.needsUpdate = true;
+  }
+
+  static scalePlaneUvs(geometry, width, height, metresPerTile = 2.2) {
+    const uv = geometry.attributes.uv;
+    if (!uv) return;
+    const scaleU = Math.max(0.05, width / metresPerTile);
+    const scaleV = Math.max(0.05, height / metresPerTile);
+    for (let i = 0; i < uv.count; i += 1) uv.setXY(i, uv.getX(i) * scaleU, uv.getY(i) * scaleV);
+    uv.needsUpdate = true;
   }
 
   solid(minX, maxX, minZ, maxZ, minY, maxY, surface = 'concrete', walkable = false) {
@@ -185,30 +229,65 @@ export class WorldSystem {
   // cornice, and an optional window band. All decorative and collision-free, so
   // it costs geometry that merges into the zone batch and nothing in gameplay.
   // `side` is +1 or -1 for which face of the wall plane the detail sits on.
-  facade({ axis, fixed, from, to, y0 = 0, y1, side = 1, pilasterEvery = 4.5, windowY = null, windowRows = 1, windowStep = 3.2, ribbed = false }) {
+  facade({ axis, fixed, from, to, y0 = 0, y1, side = 1, pilasterEvery = 4.5, windowY = null, windowRows = 1, windowStep = 3.2, ribbed = false, openings = [] }) {
     const concrete = this.materials.get('concrete');
     const metal = this.materials.get('metal');
     const dark = this.materials.get('darkGlass');
     const warm = this.materials.get('warmWindow');
     const length = to - from;
     if (length < 1) return;
+    // Trim must respect the same doorways `wallRun` cut. Decorating the full
+    // span drew pilasters, ribs and cornices straight across every opening,
+    // leaving them hanging in mid-air with the interior visible between them —
+    // reported as "floating slats with no bases or tops".
+    const blocked = (along, bandLow, bandHigh) => openings.some((opening) => (
+      along > opening.from - 0.3 && along < opening.to + 0.3
+      && bandHigh > (opening.y0 ?? y0) && bandLow < (opening.y1 ?? y1)
+    ));
     const plane = fixed + side * 0.28;
-    const trim = { surface: 'concrete', cast: false };
+    // Trim reads only through the shadow it casts on the wall behind it. An
+    // earlier pass set cast:false here for performance; the A/B that motivated
+    // it showed facades were not the cost, and the result was invisible detail.
+    const trim = { surface: 'concrete' };
     const span = (thickness, height, centre, y) => (axis === 'x'
       ? this.box([thickness, height, 0.16], [centre, y, plane], concrete, trim)
       : this.box([0.16, height, thickness], [plane, y, centre], concrete, trim));
     const band = (height, y, material, depth = 0.22) => (axis === 'x'
       ? this.box([length, height, depth], [(from + to) * 0.5, y, fixed + side * (depth * 0.5 + 0.26)], material, trim)
       : this.box([depth, height, length], [fixed + side * (depth * 0.5 + 0.26), y, (from + to) * 0.5], material, trim));
-    band(0.55, y0 + 0.28, concrete);
-    band(0.42, y1 - 0.21, concrete, 0.3);
+    // Continuous bands are split around openings instead of skipped entirely, so
+    // a base course still runs either side of a doorway.
+    const bandRun = (height, y, material, depth) => {
+      const cuts = [from];
+      for (const opening of openings) {
+        if ((opening.y1 ?? y1) <= y - height * 0.5 || (opening.y0 ?? y0) >= y + height * 0.5) continue;
+        cuts.push(Math.max(from, opening.from - 0.3), Math.min(to, opening.to + 0.3));
+      }
+      cuts.push(to);
+      cuts.sort((a, b) => a - b);
+      for (let i = 0; i < cuts.length - 1; i += 1) {
+        const a = cuts[i]; const b = cuts[i + 1];
+        if (b - a < 0.35) continue;
+        if (blocked((a + b) * 0.5, y - height * 0.5, y + height * 0.5)) continue;
+        const centre = (a + b) * 0.5; const runLength = b - a;
+        const size = axis === 'x' ? [runLength, height, depth] : [depth, height, runLength];
+        const position = axis === 'x'
+          ? [centre, y, fixed + side * (depth * 0.5 + 0.26)]
+          : [fixed + side * (depth * 0.5 + 0.26), y, centre];
+        this.box(size, position, material, trim);
+      }
+    };
+    bandRun(0.55, y0 + 0.28, concrete, 0.22);
+    bandRun(0.42, y1 - 0.21, concrete, 0.3);
     const pilasters = Math.max(2, Math.round(length / pilasterEvery));
     for (let i = 0; i <= pilasters; i += 1) {
       const centre = from + (length * i) / pilasters;
+      if (blocked(centre, y0, y1)) continue;
       span(0.55, y1 - y0 - 0.6, centre, y0 + (y1 - y0) * 0.5);
     }
     if (ribbed) {
       for (let offset = from + 0.6; offset < to; offset += 1.1) {
+        if (blocked(offset, y0, y1)) continue;
         span(0.1, y1 - y0 - 1.4, offset, y0 + (y1 - y0) * 0.5);
       }
     }
@@ -218,10 +297,11 @@ export class WorldSystem {
       if (y + 0.6 > y1) break;
       let index = 0;
       for (let offset = from + windowStep * 0.6; offset < to - windowStep * 0.4; offset += windowStep) {
+        if (blocked(offset, y - 0.6, y + 0.6)) { index += 1; continue; }
         const lit = (index + row) % 5 === 0;
         const material = lit ? warm : dark;
-        const glassTrim = { surface: 'glass', cast: false };
-        const frameTrim = { surface: 'metal', cast: false };
+        const glassTrim = { surface: 'glass' };
+        const frameTrim = { surface: 'metal' };
         const glass = axis === 'x'
           ? this.box([1.35, 1.05, 0.1], [offset, y, plane + side * 0.06], material, glassTrim)
           : this.box([0.1, 1.05, 1.35], [plane + side * 0.06, y, offset], material, glassTrim);
@@ -238,6 +318,60 @@ export class WorldSystem {
     }
   }
 
+  // Practical lights are registered as data, not as scene lights. three.js
+  // forward-renders every light in the scene for every lit fragment, so the 22
+  // lamps this district wants cost 22 light evaluations per pixel everywhere —
+  // measured as ~15 ms of world-pass GPU time. Instead a fixed pool of
+  // ACTIVE_POINT_LIGHTS real lights is re-pointed at the nearest emitters each
+  // frame. The count stays constant so the shader program never recompiles.
+  emitter(x, y, z, color, intensity, distance, decay) {
+    this.lightEmitters.push({ x, y, z, color, intensity, distance, decay });
+  }
+
+  buildLightPool() {
+    this.lightPool = [];
+    for (let i = 0; i < ACTIVE_POINT_LIGHTS; i += 1) {
+      const light = new THREE.PointLight(0xffffff, 0, 1, 2);
+      light.position.set(0, -1000, 0);
+      this.group.add(light);
+      this.lightPool.push(light);
+      this.lights.push(light);
+    }
+    this.emitterOrder = this.lightEmitters.map((_, index) => index);
+  }
+
+  // Reassigns the pool to the nearest emitters. Distance is measured to the
+  // emitter, and an emitter further away than its own falloff radius can never
+  // contribute, so it is skipped entirely.
+  updateLights(camera) {
+    if (!this.lightPool) return;
+    const order = this.emitterOrder;
+    const emitters = this.lightEmitters;
+    for (let i = 0; i < order.length; i += 1) {
+      const e = emitters[order[i]];
+      e.score = (e.x - camera.position.x) ** 2 + (e.y - camera.position.y) ** 2 + (e.z - camera.position.z) ** 2;
+    }
+    order.sort((a, b) => emitters[a].score - emitters[b].score);
+    for (let i = 0; i < this.lightPool.length; i += 1) {
+      const light = this.lightPool[i];
+      const emitter = i < order.length ? emitters[order[i]] : null;
+      if (!emitter || emitter.score > (emitter.distance + LIGHT_CULL_MARGIN) ** 2) {
+        light.intensity = 0;
+        light.position.set(0, -1000, 0);
+        continue;
+      }
+      light.position.set(emitter.x, emitter.y, emitter.z);
+      light.color.setHex(emitter.color);
+      light.intensity = emitter.intensity;
+      light.distance = emitter.distance;
+      light.decay = emitter.decay;
+    }
+  }
+
+  update(_dt, ctx) {
+    this.updateLights(this.ctx.get('render').activeCamera(ctx));
+  }
+
   landmark(id, name, x, z, y = 0) { this.landmarks.push({ id, name, x, y, z }); }
   transition(id, from, to, x, z) { this.transitions.push({ id, from, to, x, z }); }
   surfaceRect(minX, maxX, minZ, maxZ, surface) { this.surfaceRects.push({ minX, maxX, minZ, maxZ, surface }); }
@@ -247,10 +381,14 @@ export class WorldSystem {
     const boundary = new THREE.MeshBasicMaterial({ color: 0x18262e, fog: true });
     this.localMaterials = [boundary];
     const perimeter = new THREE.Mesh(new THREE.PlaneGeometry(340, 340), boundary); perimeter.rotation.x = -Math.PI / 2; perimeter.position.set(0, -0.18, -6); this.add(perimeter, { surface: 'concrete', raycast: false, shadows: false });
-    const district = new THREE.Mesh(new THREE.PlaneGeometry(BOUNDS.maxX - BOUNDS.minX + 6, BOUNDS.maxZ - BOUNDS.minZ + 6, 28, 28), concrete);
+    const districtGeometry = new THREE.PlaneGeometry(BOUNDS.maxX - BOUNDS.minX + 6, BOUNDS.maxZ - BOUNDS.minZ + 6, 28, 28);
+    WorldSystem.scalePlaneUvs(districtGeometry, BOUNDS.maxX - BOUNDS.minX + 6, BOUNDS.maxZ - BOUNDS.minZ + 6);
+    const district = new THREE.Mesh(districtGeometry, concrete);
     district.rotation.x = -Math.PI / 2; district.position.set(0, -0.02, (BOUNDS.minZ + BOUNDS.maxZ) * 0.5); this.add(district, { surface: 'concrete', shadows: false });
     this.surfaceRect(BOUNDS.minX, BOUNDS.maxX, BOUNDS.minZ, BOUNDS.maxZ, 'concrete');
-    const road = new THREE.Mesh(new THREE.PlaneGeometry(14, 88, 20, 70), asphalt); road.rotation.x = -Math.PI / 2; road.position.z = -6; this.add(road, { surface: 'asphalt' });
+    const roadGeometry = new THREE.PlaneGeometry(14, 88, 20, 70);
+    WorldSystem.scalePlaneUvs(roadGeometry, 14, 88);
+    const road = new THREE.Mesh(roadGeometry, asphalt); road.rotation.x = -Math.PI / 2; road.position.z = -6; this.add(road, { surface: 'asphalt' });
     this.surfaceRect(-7, 7, -50, 38, 'asphalt');
     this.box([2.25, 0.24, 46], [-6.95, 0.1, -3], concrete, { surface: 'concrete' });
     this.box([2.25, 0.24, 46], [6.95, 0.1, -3], tile, { surface: 'tile' });
@@ -323,7 +461,7 @@ export class WorldSystem {
     }
     this.cylinder(0.03, 0.03, 0.75, [9.15, 2.75, 6.05], metal, 'metal', 10);
     this.cylinder(0.24, 0.34, 0.28, [9.15, 2.37, 6.05], this.materials.get('lamp'), 'glass', 16);
-    const light = new THREE.PointLight(0xffa65c, 3.1, 7.5, 1.8); light.position.set(9.15, 2.28, 6.05); this.group.add(light); this.lights.push(light);
+    this.emitter(9.15, 2.28, 6.05, 0xffa65c, 3.1, 7.5, 1.8);
     this.surfaceRect(6.9, 11.4, 3.4, 9.45, 'tile');
     this.transition('shop-threshold', 'market', 'arcade', 6.9, 6.45);
   }
@@ -351,7 +489,7 @@ export class WorldSystem {
         this.box([b.w + 0.2, 0.08, gapMax - gapMin], [b.x, 0.04, (gapMin + gapMax) * 0.5], this.materials.get('concrete'), { surface: 'concrete' });
         this.surfaceRect(b.x - b.w * 0.5, b.x + b.w * 0.5, gapMin, gapMax, 'concrete');
         this.cylinder(0.16, 0.16, 0.1, [b.x, clear - 0.16, (gapMin + gapMax) * 0.5], this.materials.get('lamp'), 'glass', 10);
-        const glow = new THREE.PointLight(0xffc07a, 2.6, 9, 2); glow.position.set(b.x, clear - 0.3, (gapMin + gapMax) * 0.5); this.group.add(glow); this.lights.push(glow);
+        this.emitter(b.x, clear - 0.3, (gapMin + gapMax) * 0.5, 0xffc07a, 2.6, 9, 2);
         const side = b.x < 0 ? 'west-yard' : 'east-terrace';
         this.transition(`${side}-underpass`, 'market', side, b.x, (gapMin + gapMax) * 0.5);
         this.coverPoints.push([b.x + (b.x < 0 ? -3.4 : 3.4), gapMin - 1.6]);
@@ -430,7 +568,7 @@ export class WorldSystem {
     const warmLightMat = this.materials.get('lamp');
     for (const z of [2.2, -2.5, -6.5]) {
       this.cylinder(0.13, 0.13, 0.28, [5.0, 2.92, z], warmLightMat, 'glass', 12);
-      const light = new THREE.PointLight(0xff9b4a, 2.7, 7, 2); light.position.set(5.0, 2.7, z); this.group.add(light); this.lights.push(light);
+      this.emitter(5.0, 2.7, z, 0xff9b4a, 2.7, 7, 2);
     }
     for (const [x, z, rot, tint] of [[4.55, 2.2, 0, 0], [4.9, -1.4, 0.06, 1], [-4.8, 3.8, -0.04, 2], [-4.75, -5.8, 0.05, 1]]) {
       this.box([2.2, 0.12, 1.15], [x, 1.08, z], wood, { collision: true, surface: 'wood', rotation: [0, rot, 0] });
@@ -632,17 +770,29 @@ export class WorldSystem {
     // Shell with four openings: yard door, north door, south door and a
     // mezzanine-height door onto the catwalk.
     this.wallRun({ axis: 'z', fixed: minX, from: minZ, to: maxZ, y1: wallH, material: concrete });
-    this.wallRun({ axis: 'z', fixed: maxX, from: minZ, to: maxZ, y1: wallH, material: concrete, openings: [{ from: -4, to: 2, y0: 0, y1: 3.4 }] });
-    this.wallRun({ axis: 'x', fixed: minZ, from: minX, to: maxX, y1: wallH, material: concrete, openings: [{ from: -37, to: -31, y0: 0, y1: 3.4 }] });
+    this.wallRun({
+      axis: 'z', fixed: maxX, from: minZ, to: maxZ, y1: wallH, material: concrete,
+      openings: [
+        { from: -4, to: 2, y0: 0, y1: 3.4 },
+        // Loading slot at mezzanine height. Without a real hole the upper level
+        // is a sealed box: nothing can see or shoot out of it, which is why the
+        // depot saw almost no combat.
+        { from: -8, to: -1, y0: 4.1, y1: 5.6 },
+      ],
+    });
+    this.wallRun({ axis: 'x', fixed: minZ, from: minX, to: maxX, y1: wallH, material: concrete, openings: [{ from: -37, to: -31, y0: 0, y1: 3.4 }, { from: -42, to: -38, y0: 4.1, y1: 5.6 }] });
     this.wallRun({ axis: 'x', fixed: maxZ, from: minX, to: maxX, y1: wallH, material: concrete, openings: [{ from: -40, to: -35, y0: 0, y1: 3.4 }, { from: -36.4, to: -33.6, y0: 3.5, y1: 5.8 }] });
     this.box([maxX - minX + 1, 0.4, maxZ - minZ + 1], [(minX + maxX) * 0.5, wallH + 0.2, (minZ + maxZ) * 0.5], metal, { surface: 'metal' });
     // A twenty-metre blank slab reads as filler next to the market facades, so
     // the depot shell gets an industrial read: ribbed cladding, pilasters, a
     // clerestory window band and a parapet.
-    this.facade({ axis: 'z', fixed: maxX, from: minZ, to: maxZ, y1: wallH, side: 1, pilasterEvery: 4, ribbed: true, windowY: 6.2, windowRows: 1, windowStep: 3.6 });
+    const depotEast = [{ from: -4, to: 2, y0: 0, y1: 3.4 }, { from: -8, to: -1, y0: 4.1, y1: 5.6 }];
+    const depotNorth = [{ from: -37, to: -31, y0: 0, y1: 3.4 }, { from: -42, to: -38, y0: 4.1, y1: 5.6 }];
+    const depotSouth = [{ from: -40, to: -35, y0: 0, y1: 3.4 }, { from: -36.4, to: -33.6, y0: 3.5, y1: 5.8 }];
+    this.facade({ axis: 'z', fixed: maxX, from: minZ, to: maxZ, y1: wallH, side: 1, pilasterEvery: 4, ribbed: true, windowY: 6.2, windowRows: 1, windowStep: 3.6, openings: depotEast });
     this.facade({ axis: 'z', fixed: minX, from: minZ, to: maxZ, y1: wallH, side: -1, pilasterEvery: 4, ribbed: true, windowY: 6.2, windowRows: 1, windowStep: 3.6 });
-    this.facade({ axis: 'x', fixed: minZ, from: minX, to: maxX, y1: wallH, side: -1, pilasterEvery: 4.2, ribbed: true, windowY: 6.2, windowRows: 1, windowStep: 3.4 });
-    this.facade({ axis: 'x', fixed: maxZ, from: minX, to: maxX, y1: wallH, side: 1, pilasterEvery: 4.2, ribbed: true, windowY: 6.2, windowRows: 1, windowStep: 3.4 });
+    this.facade({ axis: 'x', fixed: minZ, from: minX, to: maxX, y1: wallH, side: -1, pilasterEvery: 4.2, ribbed: true, windowY: 6.2, windowRows: 1, windowStep: 3.4, openings: depotNorth });
+    this.facade({ axis: 'x', fixed: maxZ, from: minX, to: maxX, y1: wallH, side: 1, pilasterEvery: 4.2, ribbed: true, windowY: 6.2, windowRows: 1, windowStep: 3.4, openings: depotSouth });
     // Roof plant and a gantry crane rail give the shell a silhouette.
     for (const x of [-40, -33, -26]) {
       this.box([3.2, 1.5, 2.6], [x, wallH + 1.15, 2], metal, { surface: 'metal' });
@@ -674,7 +824,7 @@ export class WorldSystem {
     const lampMat = this.materials.get('lamp');
     for (const [x, z] of [[-39, 8], [-28, 8], [-39, -6], [-28, -6]]) {
       this.cylinder(0.34, 0.34, 0.18, [x, 6.6, z], lampMat, 'glass', 12);
-      const light = new THREE.PointLight(0xffd9a5, 3.2, 20, 2); light.position.set(x, 6.4, z); this.group.add(light); this.lights.push(light);
+      this.emitter(x, 6.4, z, 0xffd9a5, 3.2, 20, 2);
     }
     const depotSign = this.materials.createSign('SABLE FREIGHT', '#2b3a2c', '#dfe8cd');
     this.box([0.1, 1.4, 8], [-22.85, 6.4, 4], depotSign, { surface: 'metal' });
@@ -743,17 +893,21 @@ export class WorldSystem {
     const minX = 19; const maxX = 30; const minZ = -8; const maxZ = 12; const floorY = 1.5; const upperY = 5.0; const roofY = 8.4;
     this.surfaceRect(minX, maxX, minZ, maxZ, 'tile');
     // The bureau block stands on the low terrace, so its ground floor is level 1.
-    this.wallRun({ axis: 'z', fixed: minX, from: minZ, to: maxZ, y0: floorY, y1: roofY, material: plaster, thickness: 0.4, openings: [{ from: -1, to: 3, y0: floorY, y1: floorY + 2.5 }] });
-    this.wallRun({ axis: 'z', fixed: maxX, from: minZ, to: maxZ, y0: floorY, y1: roofY, material: plaster, thickness: 0.4, openings: [{ from: 4, to: 8, y0: floorY, y1: floorY + 2.5 }] });
-    this.wallRun({ axis: 'x', fixed: minZ, from: minX, to: maxX, y0: floorY, y1: roofY, material: plaster, thickness: 0.4, openings: [{ from: 23, to: 27, y0: floorY, y1: floorY + 2.5 }] });
+    this.wallRun({ axis: 'z', fixed: minX, from: minZ, to: maxZ, y0: floorY, y1: roofY, material: plaster, thickness: 0.4, openings: [{ from: -1, to: 3, y0: floorY, y1: floorY + 2.5 }, { from: -7, to: -2, y0: upperY + 0.4, y1: upperY + 1.9 }, { from: 5, to: 11, y0: upperY + 0.4, y1: upperY + 1.9 }] });
+    this.wallRun({ axis: 'z', fixed: maxX, from: minZ, to: maxZ, y0: floorY, y1: roofY, material: plaster, thickness: 0.4, openings: [{ from: 4, to: 8, y0: floorY, y1: floorY + 2.5 }, { from: -6, to: -1, y0: upperY + 0.4, y1: upperY + 1.9 }] });
+    this.wallRun({ axis: 'x', fixed: minZ, from: minX, to: maxX, y0: floorY, y1: roofY, material: plaster, thickness: 0.4, openings: [{ from: 23, to: 27, y0: floorY, y1: floorY + 2.5 }, { from: 20, to: 22.5, y0: upperY + 0.4, y1: upperY + 1.9 }, { from: 27.5, to: 29.5, y0: upperY + 0.4, y1: upperY + 1.9 }] });
     this.wallRun({ axis: 'x', fixed: maxZ, from: minX, to: maxX, y0: floorY, y1: roofY, material: plaster, thickness: 0.4, openings: [{ from: 21, to: 25, y0: floorY, y1: floorY + 2.5 }] });
     this.box([maxX - minX, 0.36, maxZ - minZ], [(minX + maxX) * 0.5, roofY + 0.18, (minZ + maxZ) * 0.5], plaster, { surface: 'plaster' });
     // Two glazed office storeys rather than a blue box: window bands on every
     // elevation, pilasters and a parapet, matching the market's facade language.
-    this.facade({ axis: 'z', fixed: minX, from: minZ, to: maxZ, y0: floorY, y1: roofY, side: -1, pilasterEvery: 4, windowY: floorY + 1.5, windowRows: 2, windowStep: 3.1 });
-    this.facade({ axis: 'z', fixed: maxX, from: minZ, to: maxZ, y0: floorY, y1: roofY, side: 1, pilasterEvery: 4, windowY: floorY + 1.5, windowRows: 2, windowStep: 3.1 });
-    this.facade({ axis: 'x', fixed: minZ, from: minX, to: maxX, y0: floorY, y1: roofY, side: -1, pilasterEvery: 3.6, windowY: floorY + 1.5, windowRows: 2, windowStep: 3.0 });
-    this.facade({ axis: 'x', fixed: maxZ, from: minX, to: maxX, y0: floorY, y1: roofY, side: 1, pilasterEvery: 3.6, windowY: floorY + 1.5, windowRows: 2, windowStep: 3.0 });
+    const westOpen = [{ from: -1, to: 3, y0: floorY, y1: floorY + 2.5 }, { from: -7, to: -2, y0: upperY + 0.4, y1: upperY + 1.9 }, { from: 5, to: 11, y0: upperY + 0.4, y1: upperY + 1.9 }];
+    const eastOpen = [{ from: 4, to: 8, y0: floorY, y1: floorY + 2.5 }, { from: -6, to: -1, y0: upperY + 0.4, y1: upperY + 1.9 }];
+    const southOpen = [{ from: 23, to: 27, y0: floorY, y1: floorY + 2.5 }, { from: 20, to: 22.5, y0: upperY + 0.4, y1: upperY + 1.9 }, { from: 27.5, to: 29.5, y0: upperY + 0.4, y1: upperY + 1.9 }];
+    const northOpen = [{ from: 21, to: 25, y0: floorY, y1: floorY + 2.5 }];
+    this.facade({ axis: 'z', fixed: minX, from: minZ, to: maxZ, y0: floorY, y1: roofY, side: -1, pilasterEvery: 4, windowY: floorY + 1.5, windowRows: 2, windowStep: 3.1, openings: westOpen });
+    this.facade({ axis: 'z', fixed: maxX, from: minZ, to: maxZ, y0: floorY, y1: roofY, side: 1, pilasterEvery: 4, windowY: floorY + 1.5, windowRows: 2, windowStep: 3.1, openings: eastOpen });
+    this.facade({ axis: 'x', fixed: minZ, from: minX, to: maxX, y0: floorY, y1: roofY, side: -1, pilasterEvery: 3.6, windowY: floorY + 1.5, windowRows: 2, windowStep: 3.0, openings: southOpen });
+    this.facade({ axis: 'x', fixed: maxZ, from: minX, to: maxX, y0: floorY, y1: roofY, side: 1, pilasterEvery: 3.6, windowY: floorY + 1.5, windowRows: 2, windowStep: 3.0, openings: northOpen });
     for (const [x, z] of [[21, -6], [28, 9]]) {
       this.box([2.2, 1.0, 1.6], [x, roofY + 0.7, z], metal, { surface: 'metal' });
       this.cylinder(0.34, 0.4, 1.4, [x + 1.4, roofY + 0.9, z], this.materials.get('rust'));
@@ -790,7 +944,7 @@ export class WorldSystem {
     const lampMat = this.materials.get('lamp');
     for (const [x, z, y] of [[24, -4, upperY + 2.5], [24, 8, upperY + 2.5], [22, 6, floorY + 2.4], [28, -5, floorY + 2.4]]) {
       this.cylinder(0.3, 0.3, 0.12, [x, y, z], lampMat, 'glass', 12);
-      const light = new THREE.PointLight(0xcfe4ff, 2.5, 16, 2); light.position.set(x, y - 0.2, z); this.group.add(light); this.lights.push(light);
+      this.emitter(x, y - 0.2, z, 0xcfe4ff, 2.5, 16, 2);
     }
     const officeSign = this.materials.createSign('BUREAU 12', '#1f3448', '#dbe6f2');
     this.box([0.1, 1.3, 7], [18.85, roofY - 1.4, 2], officeSign, { surface: 'metal' });
@@ -817,7 +971,7 @@ export class WorldSystem {
     this.solid(-0.95, 0.95, -32.95, -31.05, 0, 9.1, 'concrete');
     const beacon = new THREE.Mesh(new THREE.IcosahedronGeometry(0.7, 1), this.materials.get('emissive'));
     beacon.position.set(0, 9.4, -32); this.add(beacon, { surface: 'metal' });
-    const beaconLight = new THREE.PointLight(0x6ee9df, 4.4, 26, 2); beaconLight.position.set(0, 9.4, -32); this.group.add(beaconLight); this.lights.push(beaconLight);
+    this.emitter(0, 9.4, -32, 0x6ee9df, 4.4, 26, 2);
     this.landmark('junction-beacon', 'Junction Beacon', 0, -32, 9.4);
     this.coverPoints.push([0, -26.8], [0, -37.2], [-5.2, -32], [5.2, -32]);
     // Overpass: an elevated firing line across the junction, reached from both
@@ -868,8 +1022,7 @@ export class WorldSystem {
       const gateLamp = this.materials.get('lamp');
       for (const gate of [-16, 0, 16]) {
         this.cylinder(0.2, 0.2, 0.3, [gate, 4.6, zNear + depth * 0.6], gateLamp, 'glass', 10);
-        const light = new THREE.PointLight(south ? 0x7fe6e2 : 0xff8b5a, 3.4, 16, 2);
-        light.position.set(gate, 4.4, zNear + depth * 1.2); this.group.add(light); this.lights.push(light);
+        this.emitter(gate, 4.4, zNear + depth * 1.2, south ? 0x7fe6e2 : 0xff8b5a, 3.4, 16, 2);
       }
       // Staging clutter across the full width, so the yard is a place, not a box.
       for (const ox of [-34, -16, 0, 16, 34]) {
@@ -1212,6 +1365,10 @@ export class WorldSystem {
       indoorOutdoorTransitions: this.transitions.length,
       navNodes: this.navReachable.size,
       coverPoints: this.coverPoints.length,
+      // Reachable nav nodes per zone. A zone with few nodes cannot hold a fight
+      // no matter how the AI is tuned, so this separates map defects from AI ones.
+      navNodesByZone: Object.fromEntries([...this.navZoneNodes].map(([zone, ids]) => [zone, ids.length])),
+      elevatedNavNodesByZone: Object.fromEntries([...this.navZoneNodes].map(([zone, ids]) => [zone, ids.filter((id) => this.navNodes[id].y > 2).length])),
       colliders: this.colliders.length,
       // Post-merge mesh count: the number of objects the render and shadow passes
       // must walk every frame, which is what map density actually costs.

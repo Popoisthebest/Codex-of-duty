@@ -2,6 +2,7 @@ import { DeterministicRng } from './rng.js';
 import { EventBus } from './events.js';
 import { InputState } from './input.js';
 import { runScenario } from './scenarios.js';
+import { FrameProfiler } from './frame-profiler.js';
 
 export class Engine {
   constructor({ scene, camera, viewScene, viewCamera, canvas, config = {} }) {
@@ -17,6 +18,7 @@ export class Engine {
     const events = new EventBus();
     const rng = new DeterministicRng(1337);
     const input = new InputState(canvas);
+    this.profiler = new FrameProfiler();
     this.ctx = {
       scene,
       camera,
@@ -67,14 +69,38 @@ export class Engine {
     ctx.time.fixed = this.fixed;
     ctx.time.elapsed += this.fixed * ctx.time.scale;
     ctx.time.frame += 1;
-    for (const system of this.systems) system.fixedUpdate?.(this.fixed, ctx);
+    if (!this.profiler.enabled) {
+      for (const system of this.systems) system.fixedUpdate?.(this.fixed, ctx);
+      return;
+    }
+    for (const system of this.systems) {
+      if (!system.fixedUpdate) continue;
+      const start = performance.now();
+      system.fixedUpdate(this.fixed, ctx);
+      this.profiler.accumulate(system.constructor.id, 'fixed', performance.now() - start);
+    }
   }
 
   renderFrame(dt = this.fixed) {
     const { ctx } = this;
     ctx.time.dt = dt;
-    for (const system of this.systems) system.update?.(dt, ctx);
-    for (const system of this.systems) system.lateUpdate?.(dt, ctx);
+    if (!this.profiler.enabled) {
+      for (const system of this.systems) system.update?.(dt, ctx);
+      for (const system of this.systems) system.lateUpdate?.(dt, ctx);
+      return;
+    }
+    for (const system of this.systems) {
+      if (!system.update) continue;
+      const start = performance.now();
+      system.update(dt, ctx);
+      this.profiler.accumulate(system.constructor.id, 'update', performance.now() - start);
+    }
+    for (const system of this.systems) {
+      if (!system.lateUpdate) continue;
+      const start = performance.now();
+      system.lateUpdate(dt, ctx);
+      this.profiler.accumulate(system.constructor.id, 'late', performance.now() - start);
+    }
   }
 
   stepFrames(count) {
@@ -170,7 +196,17 @@ export class Engine {
   // a live match can be photographed. It stages a pose and changes no match state.
   stagePlayerView({ position, yaw = 0, pitch = 0 }) {
     this.ctx.get('render').usePlayerCamera(true);
-    this.ctx.get('player').stageHarnessPose({ position, yaw, pitch, eyeHeight: 1.7, stance: 'stand' });
+    const player = this.ctx.get('player');
+    player.stageHarnessPose({ position, yaw, pitch, eyeHeight: 1.7, stance: 'stand' });
+    // Push the camera out of any solid it landed inside and stand it on the real
+    // floor. A capture point buried in a container photographs the inside of that
+    // container, which reads as broken geometry and has already produced one
+    // false defect report.
+    const physics = this.ctx.get('physics');
+    physics.resolveActor(player.position, 0.36);
+    player.position.y = physics.groundHeightAt(player.position.x, player.position.z, player.position.y, 0.46);
+    player.groundY = player.position.y;
+    player.syncCamera(this.ctx, true);
     this.renderFrame(0);
     return this.snapshot();
   }
@@ -375,7 +411,11 @@ export class Engine {
     const tick = (now) => {
       if (!this.running) return;
       const dt = Math.min(0.1, Math.max(0, (now - this.lastTime) / 1000));
+      const frameMs = now - this.lastTime;
       this.lastTime = now;
+      const profiling = this.profiler.enabled;
+      const t0 = profiling ? performance.now() : 0;
+      let steps = 0;
       if (this.paused) {
         this.accumulator = 0;
       } else {
@@ -383,13 +423,54 @@ export class Engine {
         while (this.accumulator >= this.fixed) {
           this.simulateStep();
           this.accumulator -= this.fixed;
+          steps += 1;
         }
       }
+      const t1 = profiling ? performance.now() : 0;
       this.ctx.time.alpha = this.accumulator / this.fixed;
       this.renderFrame(dt);
+      if (profiling) {
+        const t2 = performance.now();
+        // update/lateUpdate are split inside renderFrame's per-system timing; the
+        // pair total is taken here so `unaccounted` isolates time spent outside
+        // our JS entirely (compositor, GPU backpressure, GC).
+        const renderMs = t2 - t1;
+        const updateShare = this.profilerUpdateSplit(renderMs);
+        this.profiler.record({ frameMs, fixedMs: t1 - t0, updateMs: updateShare.update, lateMs: updateShare.late, steps });
+      }
       this.raf = requestAnimationFrame(tick);
     };
     this.raf = requestAnimationFrame(tick);
+  }
+
+  // Splits the render half of a frame into update vs lateUpdate using the
+  // per-system totals gathered this frame, so the ratio is measured rather than
+  // assumed. lateUpdate is where renderer.render() happens.
+  profilerUpdateSplit(renderMs) {
+    let update = 0; let late = 0;
+    for (const entry of this.profiler.systemMs.values()) { update += entry.update; late += entry.late; }
+    const previous = this.profilerPrevious ?? { update: 0, late: 0 };
+    const deltaUpdate = update - previous.update;
+    const deltaLate = late - previous.late;
+    this.profilerPrevious = { update, late };
+    const total = deltaUpdate + deltaLate;
+    if (total <= 0) return { update: 0, late: renderMs };
+    return { update: (deltaUpdate / total) * renderMs, late: (deltaLate / total) * renderMs };
+  }
+
+  setProfiling(enabled) {
+    this.gpuSupported = this.ctx.get('render').setGpuProfiling(enabled);
+    this.profiler.enabled = Boolean(enabled);
+    if (enabled) {
+      this.profiler.reset();
+      this.profiler.setSystems(this.systems.map((system) => system.constructor.id));
+      this.profilerPrevious = { update: 0, late: 0 };
+    }
+    return this.profiler.enabled;
+  }
+
+  getFrameProfile() {
+    return { ...this.profiler.report(), gpu: this.ctx.get('render').getGpuReport() };
   }
 
   stop() {

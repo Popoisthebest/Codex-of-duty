@@ -66,6 +66,8 @@ createHarnessBridge({
   runAction: (name, options) => engine.runAction(name, options),
   getGameplayReport: () => engine.getGameplayReport(),
   worldMetrics: () => render.getMetrics(),
+  setProfiling: (enabled) => engine.setProfiling(enabled),
+  getFrameProfile: () => engine.getFrameProfile(),
   runScenario: (name, options) => engine.runScenario(name, options),
   stagePlayerView: (options) => engine.stagePlayerView(options),
   enterMatchMode: () => engine.enterMatchMode(),
@@ -79,6 +81,7 @@ createHarnessBridge({
   onReady: () => engine.ctx.events.emit('game:ready', { harness: engine.ctx.harness.active }),
 });
 
+if (pageParams.get('debug') === '1') window.__COD_DEBUG__ = { engine, ctx: engine.ctx };
 if (!engine.ctx.harness.active) engine.start();
 
 addEventListener('resize', () => engine.resize(innerWidth, innerHeight));

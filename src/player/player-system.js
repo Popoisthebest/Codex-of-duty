@@ -37,6 +37,9 @@ export class PlayerSystem {
     this.lean = 0;
     this.stepDistance = 0;
     this.aimZoom = 0;
+    this.sprintBlend = 0;
+    this.landDip = 0;
+    this.landDipVelocity = 0;
     this.lastDamageFrom = null;
     this.damageDirection = 0;
     this.damageTimer = 0;
@@ -83,6 +86,9 @@ export class PlayerSystem {
     this.eyeHeight = 1.7;
     this.lean = 0;
     this.stepDistance = 0;
+    this.sprintBlend = 0;
+    this.landDip = 0;
+    this.landDipVelocity = 0;
     this.lastDamageFrom = null;
     this.damageDirection = 0;
     this.damageTimer = 0;
@@ -107,6 +113,9 @@ export class PlayerSystem {
     this.eyeHeight = 1.7;
     this.lean = 0;
     this.stepDistance = 0;
+    this.sprintBlend = 0;
+    this.landDip = 0;
+    this.landDipVelocity = 0;
     this.lastDamageFrom = null;
     this.damageTimer = 0;
     this.setAimZoom(0, true);
@@ -168,7 +177,13 @@ export class PlayerSystem {
       }
     }
     if (this.position.y <= ground) {
-      if (!this.grounded && this.velocity.y < -2) ctx.events.emit('player:landed', { speed: -this.velocity.y });
+      if (!this.grounded && this.velocity.y < -2) {
+        const impact = -this.velocity.y;
+        // Landing drives a critically-damped camera dip. The event existed but
+        // nothing reacted to it, so drops felt weightless.
+        this.landDipVelocity -= Math.min(0.085, impact * 0.011);
+        ctx.events.emit('player:landed', { speed: impact });
+      }
       this.position.y = ground;
       this.velocity.y = 0;
       this.grounded = true;
@@ -178,6 +193,12 @@ export class PlayerSystem {
 
     const targetEye = crouching ? 1.16 : 1.7;
     this.eyeHeight = THREE.MathUtils.damp(this.eyeHeight, targetEye, 14, step);
+    // Sprint blend feeds both the FOV kick and the weapon's sprint pose. It eases
+    // in faster than it eases out so starting a sprint reads as an acceleration.
+    this.sprintBlend = THREE.MathUtils.damp(this.sprintBlend, this.sprinting ? 1 : 0, this.sprinting ? 7 : 5, step);
+    this.landDipVelocity += -this.landDip * 190 * step;
+    this.landDipVelocity *= Math.max(0, 1 - 12 * step);
+    this.landDip += this.landDipVelocity * step;
     const leanInput = Number(input.isDown('leanRight')) - Number(input.isDown('leanLeft'));
     this.lean = THREE.MathUtils.damp(this.lean, leanInput * 0.075, 12, step);
     this.syncCamera(ctx, false);
@@ -193,7 +214,7 @@ export class PlayerSystem {
     const speed = Math.hypot(this.velocity.x, this.velocity.z);
     const moveBob = immediate ? 0 : Math.sin(ctx.time.elapsed * (this.sprinting ? 12 : 8.5)) * Math.min(0.022, speed * 0.003);
     const leanX = Math.cos(this.yaw) * this.lean; const leanZ = -Math.sin(this.yaw) * this.lean;
-    ctx.camera.position.set(this.position.x + leanX, this.position.y + this.eyeHeight + moveBob, this.position.z + leanZ);
+    ctx.camera.position.set(this.position.x + leanX, this.position.y + this.eyeHeight + moveBob + this.landDip, this.position.z + leanZ);
     ctx.camera.rotation.set(this.pitch, this.yaw, -this.lean, 'YXZ');
   }
 
@@ -203,10 +224,17 @@ export class PlayerSystem {
     this.damageTimer = 0.6;
     const shooter = this.ctx.peek('ai')?.byId?.get?.(source);
     if (shooter) {
-      const dx = shooter.root.position.x - this.position.x;
-      const dz = shooter.root.position.z - this.position.z;
-      this.damageDirection = Math.atan2(dx, dz) + this.yaw;
+      // The attacker's world position is published rather than a baked screen
+      // angle: the HUD recomputes the bearing every frame so the indicator keeps
+      // pointing at the shooter while the player turns to face them.
+      this.ctx.events.emit('player:damaged', {
+        amount, hitZone, source,
+        x: shooter.root.position.x, y: shooter.root.position.y, z: shooter.root.position.z,
+        health: this.health,
+      });
       this.ctx.events.emit('combat:contact', { actorId: 'player', team: this.team, targetId: source });
+    } else {
+      this.ctx.events.emit('player:damaged', { amount, hitZone, source, x: null, y: null, z: null, health: this.health });
     }
     if (this.health <= 0) {
       this.dead = true;
@@ -227,7 +255,9 @@ export class PlayerSystem {
 
   setAimZoom(blend, immediate = false) {
     this.aimZoom = THREE.MathUtils.clamp(blend, 0, 1);
-    const fov = THREE.MathUtils.lerp(70, 54, this.aimZoom);
+    // Sprint widens the view slightly; ADS narrows it. They compose rather than
+    // fight because ADS is suppressed while sprinting.
+    const fov = THREE.MathUtils.lerp(70, 54, this.aimZoom) + this.sprintBlend * 5.5;
     if (immediate || Math.abs(this.ctx.camera.fov - fov) > 1e-6) {
       this.ctx.camera.fov = fov;
       this.ctx.camera.updateProjectionMatrix();
@@ -285,6 +315,8 @@ export class PlayerSystem {
       pitch: this.pitch,
       lean: this.lean,
       grounded: this.grounded,
+      sprintBlend: Number(this.sprintBlend.toFixed(3)),
+      landDip: Number(this.landDip.toFixed(4)),
       zone: this.ctx.peek('world')?.zoneAt(this.position.x, this.position.z, this.position.y) ?? null,
     };
   }

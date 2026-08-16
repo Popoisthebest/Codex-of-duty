@@ -1,3 +1,6 @@
+const DAMAGE_INDICATOR_SECONDS = 1.35;
+const DAMAGE_INDICATOR_SLOTS = 4;
+
 const clockText = (seconds) => {
   const total = Math.max(0, Math.ceil(seconds));
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
@@ -25,6 +28,11 @@ export class UISystem {
     this.lastRespawn = '';
     this.scoreboardOpen = false;
     this.domState = Object.create(null);
+    this.damageSources = Array.from({ length: DAMAGE_INDICATOR_SLOTS }, () => ({ source: null, x: 0, z: 0, life: 0, strength: 0 }));
+    this.announceTimer = 0;
+    this.announceKey = '';
+    this.lastLead = 'tied';
+    this.matchPointShown = false;
     this.root = document.createElement('div');
     this.root.className = 'hud-root';
     if (ctx.harness.active) this.root.classList.add('is-harness');
@@ -44,7 +52,9 @@ export class UISystem {
       <div class="hud-compass" aria-label="Compass"><span>W</span><i></i><span>NW</span><i></i><strong id="bearing">N&nbsp;&nbsp;000</strong><i></i><span>NE</span><i></i><span>E</span></div>
       <div class="hud-crosshair" aria-hidden="true"><i></i><i></i><i></i><i></i><b></b></div>
       <div class="hud-hitmarker" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      <div class="hud-damage" aria-hidden="true">${'<i></i>'.repeat(DAMAGE_INDICATOR_SLOTS)}</div>
       <div class="hud-kill" id="kill-feed" role="status"></div>
+      <div class="hud-announce" id="announce" role="status"><b id="announce-text"></b><span id="announce-sub"></span></div>
       <ul class="hud-feed" id="match-feed" aria-label="Kill feed"></ul>
       <section class="hud-health" aria-label="Player health">
         <div class="hud-label">VITALS</div><div class="hud-health-row"><b id="health-value">100</b><div class="hud-health-track"><i id="health-fill"></i></div></div>
@@ -86,6 +96,8 @@ export class UISystem {
       weaponState: this.root.querySelector('#weapon-state'), hit: this.root.querySelector('.hud-hitmarker'),
       vignette: this.root.querySelector('.hud-vignette'), kill: this.root.querySelector('#kill-feed'),
       crosshair: this.root.querySelector('.hud-crosshair'), briefing: this.root.querySelector('#briefing'),
+      announce: this.root.querySelector('#announce'), announceText: this.root.querySelector('#announce-text'), announceSub: this.root.querySelector('#announce-sub'),
+      damage: [...this.root.querySelectorAll('.hud-damage i')],
       condition: [...this.root.querySelectorAll('.hud-condition i')], reloadTrack: this.root.querySelector('.hud-reload-track'), reloadFill: this.root.querySelector('.hud-reload-track i'),
       death: this.root.querySelector('#death-screen'), restart: this.root.querySelector('#restart-button'),
       scoreAlpha: this.root.querySelector('#score-alpha'), scoreBravo: this.root.querySelector('#score-bravo'),
@@ -137,6 +149,21 @@ export class UISystem {
     this.offDamage = ctx.events.on('combat:damage', (event) => {
       if (event.targetType === 'player') this.damageTimer = 0.42;
     });
+    // Directional damage: without it a player shot from behind only knows they
+    // are losing health, not where to turn. Sources are pooled and re-aimed each
+    // frame from the attacker's world position.
+    this.offPlayerDamage = ctx.events.on('player:damaged', (event) => {
+      if (event.x == null) return;
+      const existing = this.damageSources.find((entry) => entry.source === event.source && entry.life > 0);
+      const slot = existing ?? this.damageSources.find((entry) => entry.life <= 0);
+      if (!slot) return;
+      slot.source = event.source;
+      slot.x = event.x; slot.z = event.z;
+      slot.life = DAMAGE_INDICATOR_SECONDS;
+      // A single rifle hit must already be clearly readable; repeated hits from
+      // the same shooter drive it to full.
+      slot.strength = Math.min(1, (existing ? slot.strength : 0.62) + event.amount / 90);
+    });
     this.offDeath = ctx.events.on('actor:died', (event) => {
       if (event.actorType !== 'player') return;
       const killer = ctx.get('match').getParticipant(event.source);
@@ -154,7 +181,7 @@ export class UISystem {
       .hud-match{position:absolute;top:16px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:18px;padding:8px 18px;background:linear-gradient(180deg,rgba(4,15,20,.82),rgba(4,15,20,.28));border-bottom:1px solid rgba(134,209,210,.28)}.hud-team{display:flex;align-items:center;gap:10px;font-size:11px;font-weight:800}.hud-team b{font:800 26px/1 ui-monospace,monospace}.hud-team.is-alpha b,.hud-team.is-alpha span{color:var(--cyan)}.hud-team.is-bravo b,.hud-team.is-bravo span{color:var(--bravo)}.hud-clock{text-align:center;min-width:120px}.hud-clock b{display:block;font:700 20px/1 ui-monospace,monospace}.hud-clock i{display:block;font-style:normal;font-size:8px;color:#8ba0a4;margin-top:4px}
       .hud-objective{position:absolute;left:34px;top:30px;padding:13px 16px 12px;border-left:2px solid var(--cyan);background:linear-gradient(90deg,rgba(4,15,20,.72),rgba(4,15,20,.08));min-width:280px}.hud-kicker,.hud-label,.hud-firemode{font-size:10px;color:#92a8ac}.hud-pulse{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--cyan);box-shadow:0 0 9px var(--cyan);margin-right:7px}.hud-objective-title{font-weight:800;font-size:13px;margin-top:5px}.hud-objective-meta{display:flex;justify-content:space-between;margin-top:8px;font-size:10px;color:#8ba0a4}.hud-objective-meta b{color:var(--amber)}
       .hud-compass{position:absolute;top:96px;left:50%;transform:translateX(-50%);width:360px;display:flex;gap:16px;align-items:center;justify-content:center;font:10px/1 ui-monospace,monospace;color:#8da3a7}.hud-compass i{height:5px;width:1px;background:#91a9ad}.hud-compass strong{color:white;font-size:12px;border-top:2px solid var(--amber);padding-top:8px}
-      .hud-crosshair{--gap:10px;position:absolute;left:50%;top:50%;width:1px;height:1px}.hud-crosshair i{position:absolute;background:rgba(228,247,247,.85);box-shadow:0 0 3px #000}.hud-crosshair i:nth-child(1),.hud-crosshair i:nth-child(2){height:1px;width:7px;top:0}.hud-crosshair i:nth-child(1){right:var(--gap)}.hud-crosshair i:nth-child(2){left:var(--gap)}.hud-crosshair i:nth-child(3),.hud-crosshair i:nth-child(4){width:1px;height:7px;left:0}.hud-crosshair i:nth-child(3){bottom:var(--gap)}.hud-crosshair i:nth-child(4){top:var(--gap)}.hud-crosshair b{position:absolute;width:2px;height:2px;background:var(--amber);transform:translate(-.5px,-.5px)}.hud-hitmarker{position:absolute;left:50%;top:50%;opacity:0;transition:opacity .04s}.hud-hitmarker.is-visible{opacity:1}.hud-hitmarker i{position:absolute;width:9px;height:2px;background:white;box-shadow:0 0 4px #000}.hud-hitmarker i:nth-child(1){transform:translate(-13px,-10px) rotate(45deg)}.hud-hitmarker i:nth-child(2){transform:translate(4px,-10px) rotate(-45deg)}.hud-hitmarker i:nth-child(3){transform:translate(-13px,8px) rotate(-45deg)}.hud-hitmarker i:nth-child(4){transform:translate(4px,8px) rotate(45deg)}.hud-hitmarker.is-kill i{background:var(--danger)}.hud-kill{position:absolute;left:50%;top:56%;transform:translateX(-50%);font-size:12px;font-weight:800;color:var(--amber);opacity:0;transition:opacity .2s}.hud-kill.is-visible{opacity:1}
+      .hud-crosshair{--gap:10px;position:absolute;left:50%;top:50%;width:1px;height:1px}.hud-crosshair i{position:absolute;background:rgba(228,247,247,.85);box-shadow:0 0 3px #000}.hud-crosshair i:nth-child(1),.hud-crosshair i:nth-child(2){height:1px;width:7px;top:0}.hud-crosshair i:nth-child(1){right:var(--gap)}.hud-crosshair i:nth-child(2){left:var(--gap)}.hud-crosshair i:nth-child(3),.hud-crosshair i:nth-child(4){width:1px;height:7px;left:0}.hud-crosshair i:nth-child(3){bottom:var(--gap)}.hud-crosshair i:nth-child(4){top:var(--gap)}.hud-crosshair b{position:absolute;width:2px;height:2px;background:var(--amber);transform:translate(-.5px,-.5px)}.hud-hitmarker{position:absolute;left:50%;top:50%;opacity:0;transition:opacity .04s}.hud-hitmarker.is-visible{opacity:1}.hud-hitmarker i{position:absolute;width:9px;height:2px;background:white;box-shadow:0 0 4px #000}.hud-hitmarker i:nth-child(1){transform:translate(-13px,-10px) rotate(45deg)}.hud-hitmarker i:nth-child(2){transform:translate(4px,-10px) rotate(-45deg)}.hud-hitmarker i:nth-child(3){transform:translate(-13px,8px) rotate(-45deg)}.hud-hitmarker i:nth-child(4){transform:translate(4px,8px) rotate(45deg)}.hud-hitmarker.is-kill i{background:var(--danger)}.hud-announce{position:absolute;left:50%;top:20%;transform:translateX(-50%);text-align:center;opacity:0;transition:opacity .25s}.hud-announce.is-visible{opacity:1}.hud-announce b{display:block;font-size:26px;font-weight:900;letter-spacing:.2em;color:var(--amber);text-shadow:0 2px 14px rgba(0,0,0,.9)}.hud-announce span{display:block;font-size:10px;letter-spacing:.28em;color:#c2d3d6;margin-top:5px}.hud-announce.is-bad b{color:var(--danger)}.hud-announce.is-good b{color:var(--cyan)}.hud-damage{position:absolute;left:50%;top:50%;width:0;height:0}.hud-damage i{position:absolute;left:-34px;top:-110px;width:68px;height:0;opacity:0;border-left:34px solid transparent;border-right:34px solid transparent;border-bottom:30px solid rgba(255,104,74,.96);transform-origin:50% 110px;transition:opacity .1s;will-change:transform,opacity}.hud-kill{position:absolute;left:50%;top:56%;transform:translateX(-50%);font-size:12px;font-weight:800;color:var(--amber);opacity:0;transition:opacity .2s}.hud-kill.is-visible{opacity:1}
       .hud-feed{position:absolute;right:34px;top:120px;list-style:none;margin:0;padding:0;text-align:right;font-size:11px;font-weight:700;max-width:330px}.hud-feed li{margin-bottom:5px;padding:3px 8px;background:rgba(4,15,20,.55);display:inline-block}.hud-feed b{font-weight:800}.hud-feed .t-alpha{color:var(--cyan)}.hud-feed .t-bravo{color:var(--bravo)}.hud-feed i{font-style:normal;color:#8ba0a4;margin:0 6px}
       .hud-health{position:absolute;left:34px;bottom:32px;width:245px}.hud-health-row{display:flex;gap:12px;align-items:center}.hud-health-row b{font:700 26px/1 ui-monospace,monospace}.hud-health-track{height:5px;flex:1;background:rgba(180,220,225,.2)}.hud-health-track i{display:block;width:100%;height:100%;background:linear-gradient(90deg,var(--cyan),#e5fcfb);box-shadow:0 0 8px rgba(131,230,228,.5)}.hud-condition{display:flex;gap:4px;margin:8px 0 0 44px}.hud-condition i{width:38px;height:3px;background:rgba(111,137,144,.25)}.hud-condition i.is-active{background:#6f8990}.hud-root.is-critical .hud-health-row b{color:var(--danger)}.hud-root.is-critical .hud-health-track i,.hud-root.is-critical .hud-condition i.is-active{background:linear-gradient(90deg,var(--danger),#ff947d);box-shadow:0 0 9px rgba(255,93,75,.55)}
       .hud-ammo{position:absolute;right:34px;bottom:30px;text-align:right}.hud-weapon{font-weight:800;font-size:13px}.hud-weapon span{font-size:9px;color:#7d969b;margin-left:8px}.hud-ammo-row{display:flex;justify-content:flex-end;align-items:end;gap:10px;margin-top:3px}.hud-ammo-row b{font:800 44px/.9 ui-monospace,monospace}.hud-ammo-row i{width:1px;height:29px;background:#688087}.hud-ammo-row span{font:16px/1 ui-monospace,monospace;color:#9aadb0}.hud-firemode{margin-top:8px}.hud-firemode span{color:var(--cyan)}.hud-reload-track{height:2px;width:100%;margin-top:6px;background:rgba(131,230,228,.16);opacity:0}.hud-reload-track.is-visible{opacity:1}.hud-reload-track i{display:block;height:100%;width:0;background:var(--amber);box-shadow:0 0 7px var(--amber)}.hud-controls{position:absolute;bottom:13px;left:50%;transform:translateX(-50%);font-size:9px;color:#779095}
@@ -168,6 +195,13 @@ export class UISystem {
   }
 
   fixedUpdate(step) {
+    if (this.announceTimer > 0) {
+      this.announceTimer = Math.max(0, this.announceTimer - step);
+      if (this.announceTimer === 0) this.els.announce.classList.remove('is-visible');
+    }
+    for (const entry of this.damageSources) {
+      if (entry.life > 0) entry.life = Math.max(0, entry.life - step);
+    }
     this.hitTimer = Math.max(0, this.hitTimer - step);
     this.damageTimer = Math.max(0, this.damageTimer - step);
     this.killTimer = Math.max(0, this.killTimer - step);
@@ -196,6 +230,9 @@ export class UISystem {
     this.lastScores = ''; this.lastClock = ''; this.lastFeedSequence = -1; this.lastPhase = ''; this.lastZone = ''; this.lastRespawn = '';
     this.scoreboardOpen = false;
     this.domState = Object.create(null);
+    for (const entry of this.damageSources) { entry.life = 0; entry.strength = 0; entry.source = null; }
+    this.announceTimer = 0; this.announceKey = ''; this.lastLead = 'tied'; this.matchPointShown = false;
+    this.els.announce.classList.remove('is-visible', 'is-good', 'is-bad');
     this.els.death.hidden = true; this.els.end.hidden = true; this.els.prematch.hidden = true; this.els.scoreboard.hidden = true;
     this.els.feed.replaceChildren();
     this.root.classList.remove('is-critical', 'is-dead'); this.els.end.classList.remove('is-defeat');
@@ -235,6 +272,8 @@ export class UISystem {
     const clock = clockText(match.getTimeRemaining());
     if (clock !== this.lastClock) { this.els.clock.textContent = clock; this.lastClock = clock; }
 
+    this.updateAnnouncements(match, scores);
+
     const feed = match.getKillFeed();
     if (feed.length && feed[0].sequence !== this.lastFeedSequence) {
       this.lastFeedSequence = feed[0].sequence;
@@ -261,6 +300,35 @@ export class UISystem {
     this.setState('hit', this.hitTimer > 0, (value) => this.els.hit.classList.toggle('is-visible', value));
     this.setState('damage', this.damageTimer > 0, (value) => this.els.vignette.classList.toggle('is-hit', value));
     this.setState('killBanner', this.killTimer > 0, (value) => this.els.kill.classList.toggle('is-visible', value));
+    this.updateDamageIndicators(player);
+  }
+
+  // Bearing is recomputed from the attacker's world position every frame so the
+  // arc tracks the shooter as the player turns, which is what makes it usable
+  // for actually finding them rather than just noticing you were hit.
+  updateDamageIndicators(player) {
+    for (let i = 0; i < this.damageSources.length; i += 1) {
+      const entry = this.damageSources[i];
+      const element = this.els.damage[i];
+      if (!element) continue;
+      if (entry.life <= 0) {
+        this.setState(`dmg${i}`, 0, () => { element.style.opacity = '0'; });
+        continue;
+      }
+      const dx = entry.x - player.position.x;
+      const dz = entry.z - player.position.z;
+      // Project onto the player's own forward/right axes. Using atan2(dx, dz)
+      // directly puts "straight ahead" at 180 degrees, which pointed every
+      // indicator the wrong way round.
+      const sin = Math.sin(player.yaw); const cos = Math.cos(player.yaw);
+      const forward = dx * -sin + dz * -cos;
+      const right = dx * cos + dz * -sin;
+      const degrees = Math.round(Math.atan2(right, forward) * 180 / Math.PI);
+      const fade = Math.min(1, entry.life / DAMAGE_INDICATOR_SECONDS);
+      const opacity = Math.round(fade * entry.strength * 100) / 100;
+      this.setState(`dmgA${i}`, degrees, (value) => { element.style.transform = `rotate(${value}deg)`; });
+      this.setState(`dmg${i}`, opacity, (value) => { element.style.opacity = String(value); });
+    }
   }
 
   setState(key, value, apply) {
@@ -290,6 +358,41 @@ export class UISystem {
       const value = String(Math.max(0, Math.ceil(participant.respawnTimer)));
       if (value !== this.lastRespawn) { this.els.respawnTimer.textContent = value; this.lastRespawn = value; }
     }
+  }
+
+  // Match milestones read off authoritative scores. Without these a TDM has no
+  // sense of momentum: the score just ticks and the match ends abruptly.
+  updateAnnouncements(match, scores) {
+    if (match.phase !== 'active') {
+      if (this.announceTimer > 0) { this.announceTimer = 0; this.els.announce.classList.remove('is-visible'); }
+      return;
+    }
+    const lead = scores.alpha === scores.bravo ? 'tied' : scores.alpha > scores.bravo ? 'alpha' : 'bravo';
+    const remaining = Math.min(scores.limit - scores.alpha, scores.limit - scores.bravo);
+    // Proportional to the ruleset: 5 kills out at the default limit of 100, but
+    // a scenario running a short limit should not call match point at 1-0.
+    const matchPointAt = Math.max(2, Math.round(scores.limit * 0.05));
+    if (!this.matchPointShown && remaining <= matchPointAt && remaining > 0) {
+      this.matchPointShown = true;
+      this.announce('MATCH POINT', `${scores.limit - Math.max(scores.alpha, scores.bravo)} TO WIN`, lead === 'alpha' ? 'is-good' : 'is-bad');
+    } else if (lead !== this.lastLead && scores.alpha + scores.bravo > 0) {
+      if (lead === 'tied') this.announce('SCORES LEVEL', `${scores.alpha} — ${scores.bravo}`, '');
+      else if (lead === 'alpha') this.announce('ALPHA LEADS', `${scores.alpha} — ${scores.bravo}`, 'is-good');
+      else this.announce('BRAVO LEADS', `${scores.alpha} — ${scores.bravo}`, 'is-bad');
+    }
+    this.lastLead = lead;
+  }
+
+  announce(text, sub, tone) {
+    const key = `${text}:${sub}`;
+    if (key === this.announceKey && this.announceTimer > 0) return;
+    this.announceKey = key;
+    this.announceTimer = 2.6;
+    this.els.announceText.textContent = text;
+    this.els.announceSub.textContent = sub;
+    this.els.announce.classList.remove('is-good', 'is-bad');
+    if (tone) this.els.announce.classList.add(tone);
+    this.els.announce.classList.add('is-visible');
   }
 
   renderFeed(feed) {
@@ -334,7 +437,7 @@ export class UISystem {
   }
 
   dispose() {
-    this.offHit?.(); this.offDamage?.(); this.offDeath?.();
+    this.offHit?.(); this.offDamage?.(); this.offPlayerDamage?.(); this.offDeath?.();
     document.removeEventListener('pointerlockchange', this.onLock);
     removeEventListener('keydown', this.onKey);
     removeEventListener('keyup', this.onKey);

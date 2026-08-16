@@ -16,9 +16,12 @@ const SPAWN_PROTECTION = 1.4;
 const SPAWN_DEATH_WINDOW = 5;
 const KILL_FEED_LIMIT = 6;
 // Metres to the nearest live enemy: below MIN it is a spawn trap, around IDEAL
-// the player walks a few seconds and finds a fight.
-const MIN_SPAWN_DISTANCE = 22;
-const IDEAL_SPAWN_DISTANCE = 34;
+// the player walks a few seconds and finds a fight. MIN sits outside bot sight
+// range (42 m is the acquisition limit, but a spawn at 22 m was inside it often
+// enough to push spawn deaths to 20% of all deaths), while IDEAL keeps re-entry
+// to a handful of seconds.
+const MIN_SPAWN_DISTANCE = 30;
+const IDEAL_SPAWN_DISTANCE = 40;
 
 // Authoritative team-deathmatch state. Everything the HUD, the harness report
 // and the scenario runner read comes from here; no system keeps a private score.
@@ -72,7 +75,8 @@ export class MatchSystem {
       shotsFired: 0, firstContactSeconds: null, contacts: 0,
       respawnToContactTotal: 0, respawnToContactSamples: 0,
       killsByZone: {}, killsByTeam: { alpha: 0, bravo: 0 },
-      stuckByZone: {}, stuckSamples: [],
+      stuckByZone: {}, stuckSamples: [], spawnDeathDetail: [],
+      lifetimes: [], killerDistances: [], pathAdvances: 0,
     };
     for (const team of this.teams.values()) team.score = 0;
     for (const participant of this.participants) {
@@ -173,9 +177,38 @@ export class MatchSystem {
     // deployment happens at clock zero in a friendly staging yard, so counting
     // it would inflate the metric that spawn quality is judged by.
     const sinceSpawn = this.clock - victim.spawnedAt;
-    if (this.phase === 'active' && victim.spawnedAt > 0 && sinceSpawn < SPAWN_DEATH_WINDOW) this.telemetry.spawnDeaths += 1;
+    if (this.phase === 'active' && victim.spawnedAt > 0 && sinceSpawn < SPAWN_DEATH_WINDOW) {
+      this.telemetry.spawnDeaths += 1;
+      if (this.telemetry.spawnDeathDetail.length < 40) {
+        const spawn = victim.spawnPosition;
+        const travelled = spawn && event.position
+          ? Math.hypot(event.position.x - spawn.x, event.position.z - spawn.z)
+          : null;
+        this.telemetry.spawnDeathDetail.push({
+          actor: victim.id,
+          secondsAlive: Number(sinceSpawn.toFixed(2)),
+          travelledM: travelled == null ? null : Number(travelled.toFixed(1)),
+          killer: this.byId.get(event.source)?.id ?? event.source ?? null,
+          spawnZone: victim.spawnContext?.zone ?? null,
+          deathZone: victim.lastZone,
+          spawnNearestEnemyM: victim.spawnContext?.nearestEnemyM ?? null,
+          spawnScore: victim.spawnContext?.score ?? null,
+        });
+      }
+    }
 
+    if (this.phase === 'active' && victim.spawnedAt > 0) {
+      this.telemetry.lifetimes.push(Number(sinceSpawn.toFixed(2)));
+    }
     const killer = this.byId.get(event.source);
+    if (killer && event.position) {
+      const shooter = this.getActorStates().find((actor) => actor.id === killer.id);
+      if (shooter) {
+        this.telemetry.killerDistances.push(Number(
+          Math.hypot(shooter.x - event.position.x, shooter.y - (event.position.y ?? 0), shooter.z - event.position.z).toFixed(1),
+        ));
+      }
+    }
     const suicide = !killer || killer.id === victim.id;
     const friendly = killer && killer.team === victim.team;
     if (this.phase === 'active') {
@@ -226,6 +259,7 @@ export class MatchSystem {
     participant.spawnedAt = this.clock;
     participant.protectedUntil = this.clock + SPAWN_PROTECTION;
     participant.contactedSinceSpawn = false;
+    if (position) participant.spawnPosition = { x: position.x, y: position.y ?? 0, z: position.z };
     if (position) participant.lastZone = this.world.zoneAt(position.x, position.z, position.y ?? 0);
     // The opening deployment is not a respawn; only re-entry after a death is.
     if (participant.deaths > 0) this.telemetry.respawns += 1;
@@ -267,6 +301,9 @@ export class MatchSystem {
 
   // Recording where bots stall is what makes a navigation defect findable; a
   // bare counter only says something is wrong somewhere.
+  // Stuck count alone is meaningless without knowing how much pathing happened.
+  reportPathAdvance() { this.telemetry.pathAdvances += 1; }
+
   reportStuckRecovery(position = null) {
     this.telemetry.stuckRecoveries += 1;
     if (!position) return;
@@ -344,6 +381,21 @@ export class MatchSystem {
     participant.spawnIndex = best.index;
     this.recentSpawnIndices.unshift(best.index);
     if (this.recentSpawnIndices.length > 6) this.recentSpawnIndices.length = 6;
+    // Keep the situation this spawn was chosen in. When the actor dies moments
+    // later this is what distinguishes "spawned into a fight" from "walked into
+    // one", which need opposite fixes.
+    let nearestEnemy = Infinity;
+    for (const enemy of enemies) {
+      const distance = Math.hypot(enemy.x - best.point.x, enemy.z - best.point.z);
+      if (distance < nearestEnemy) nearestEnemy = distance;
+    }
+    participant.spawnContext = {
+      index: best.index,
+      score: Number(bestScore.toFixed(1)),
+      nearestEnemyM: Number.isFinite(nearestEnemy) ? Number(nearestEnemy.toFixed(1)) : null,
+      zone: this.world.zoneAt(best.point.x, best.point.z, best.point.y ?? 0),
+      enemiesAlive: enemies.length,
+    };
     return { ...best.point, spawnScore: Number(bestScore.toFixed(1)) };
   }
 
@@ -385,6 +437,17 @@ export class MatchSystem {
           .sort((a, b) => b.score - a.score || b.kills - a.kills),
       };
     });
+  }
+
+  static describe(values) {
+    if (!values.length) return null;
+    const sorted = [...values].sort((a, b) => a - b);
+    const at = (p) => sorted[Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1))];
+    return {
+      n: sorted.length,
+      mean: Number((sorted.reduce((total, value) => total + value, 0) / sorted.length).toFixed(2)),
+      p50: at(0.5), p90: at(0.9), min: sorted[0], max: sorted[sorted.length - 1],
+    };
   }
 
   getReport() {
@@ -429,8 +492,15 @@ export class MatchSystem {
           ? Number((telemetry.respawnToContactTotal / telemetry.respawnToContactSamples).toFixed(2))
           : null,
         killsByZone: { ...telemetry.killsByZone },
+        lifetimeSeconds: MatchSystem.describe(telemetry.lifetimes),
+        killerDistanceM: MatchSystem.describe(telemetry.killerDistances),
+        pathAdvances: telemetry.pathAdvances,
+        stuckPerThousandPathAdvances: telemetry.pathAdvances
+          ? Number((telemetry.stuckRecoveries * 1000 / telemetry.pathAdvances).toFixed(2))
+          : null,
         stuckByZone: { ...telemetry.stuckByZone },
         stuckSamples: telemetry.stuckSamples.slice(0, 20),
+        spawnDeathDetail: telemetry.spawnDeathDetail.slice(0, 20),
         killsByTeam: { ...telemetry.killsByTeam },
       },
     };

@@ -123,16 +123,23 @@ class EvidenceRecorder {
   dispose() { for (const off of this.offs) off(); }
 }
 
-// Drives the human slot with deterministic aim-and-fire so the player is a real
-// participant in the scenario rather than a spectator.
-function drivePlayer(engine, frame) {
+// Drives the human slot deterministically. This must behave like a plausible
+// player, not an aimbot: an earlier version snapped perfectly onto any visible
+// opponent at unlimited range and fired instantly, which made the scripted human
+// responsible for *every* spawn death in the soak and made spawn placement look
+// broken when it was not. It now has a limited engagement range, a reaction
+// delay before it opens up, and residual aim error.
+const DRIVER_ENGAGE_RANGE = 34;
+const DRIVER_REACTION_FRAMES = 16;
+
+function drivePlayer(engine, frame, state) {
   const ctx = engine.ctx;
   const player = ctx.get('player');
   const weapon = ctx.get('weapons');
   const input = ctx.input;
   if (player.dead) {
-    input.setVirtual('fire', false);
-    input.setVirtual('ads', false);
+    input.clearVirtual();
+    state.acquiredFor = 0;
     return;
   }
   if (weapon.ammo === 0 && !weapon.reloading) {
@@ -141,8 +148,9 @@ function drivePlayer(engine, frame) {
     return;
   }
   input.setVirtual('reload', false);
-  const aim = ctx.get('ai').getAimPoint();
+  const aim = ctx.get('ai').getAimPoint(DRIVER_ENGAGE_RANGE);
   if (!aim) {
+    state.acquiredFor = 0;
     input.setVirtual('fire', false);
     input.setVirtual('ads', false);
     input.setVirtual('forward', true);
@@ -151,9 +159,13 @@ function drivePlayer(engine, frame) {
   }
   input.setVirtual('forward', false);
   input.setVirtual('sprint', false);
-  player.aimAtPoint(aim);
+  state.acquiredFor += 1;
+  // Deterministic residual aim error so the driver does not headshot everything
+  // it can see the instant it sees it.
+  const wobble = state.rng.range(-0.55, 0.55);
+  player.aimAtPoint({ x: aim.x + wobble, y: aim.y + state.rng.range(-0.3, 0.3), z: aim.z + wobble });
   input.setVirtual('ads', true);
-  input.setVirtual('fire', true);
+  input.setVirtual('fire', state.acquiredFor > DRIVER_REACTION_FRAMES);
 }
 
 async function runTdmCore(engine, options = {}) {
@@ -171,6 +183,7 @@ async function runTdmCore(engine, options = {}) {
   const restoreRules = match.configureRules({ scoreLimit, timeLimitSeconds: 600, respawnSeconds: 1.6 });
 
   const recorder = new EvidenceRecorder(ctx);
+  const driverState = { acquiredFor: 0, rng: ctx.rng.fork('driver') };
   const errors = [];
   const phaseBefore = match.phase;
   const participantsBefore = match.getReport().participants;
@@ -185,7 +198,7 @@ async function runTdmCore(engine, options = {}) {
     const maxFrames = Math.ceil(maxSeconds / FIXED);
     framesRun = engine.simulateFrames(maxFrames, 15, (index) => {
       recorder.pollScores(match);
-      drivePlayer(engine, index);
+      drivePlayer(engine, index, driverState);
       return match.phase !== 'ended';
     });
   } catch (error) {
@@ -273,20 +286,51 @@ async function runCombatSoak(engine, options = {}) {
   // A soak must not end early, so the score limit is raised out of the way.
   const restoreRules = match.configureRules({ scoreLimit: 100000, timeLimitSeconds: simulatedSeconds * 4, respawnSeconds: 3 });
   const recorder = new EvidenceRecorder(ctx);
+  const driverState = { acquiredFor: 0, rng: ctx.rng.fork('driver') };
   const errors = [];
 
   let maxStuckSeconds = 0;
   const zoneOccupancy = new Map();
+  const goalZones = new Map();
+  const lanes = new Map();
+  const elevatedSamples = new Map();
+  const maxY = new Map();
+  let stairTargeting = 0;
+  let highTargeting = 0;
+  const pathMaxY = new Map();
+  let goalHigh = 0;
+  let goalLow = 0;
   let framesRun = 0;
   try {
     framesRun = engine.simulateFrames(Math.ceil(simulatedSeconds / FIXED), 15, (index) => {
-      drivePlayer(engine, index);
+      drivePlayer(engine, index, driverState);
       for (const bot of ai.bots) if (bot.stuckTimer > maxStuckSeconds) maxStuckSeconds = bot.stuckTimer;
       if (index % 120 === 0) {
         for (const bot of ai.bots) {
           if (!bot.alive) continue;
           const zone = ctx.get('world').zoneAt(bot.root.position.x, bot.root.position.z, bot.root.position.y);
           zoneOccupancy.set(zone, (zoneOccupancy.get(zone) ?? 0) + 1);
+          // What a bot is *aiming for* separates "never routed there" from
+          // "routed there but never arrived".
+          const goal = bot.goalZone ?? 'none';
+          goalZones.set(goal, (goalZones.get(goal) ?? 0) + 1);
+          lanes.set(bot.lane, (lanes.get(bot.lane) ?? 0) + 1);
+          if (bot.root.position.y > 2) elevatedSamples.set(zone, (elevatedSamples.get(zone) ?? 0) + 1);
+          maxY.set(bot.id, Math.max(maxY.get(bot.id) ?? 0, bot.root.position.y));
+          if (bot.path.length && bot.pathIndex < bot.path.length) {
+            const node = ai.nav[bot.path[bot.pathIndex]];
+            if (node?.stair) stairTargeting += 1;
+            if (node && node.y > 2) highTargeting += 1;
+          }
+          if (bot.path.length) {
+            let pathMax = 0;
+            for (const id of bot.path) pathMax = Math.max(pathMax, ai.nav[id].y);
+            pathMaxY.set(bot.id, Math.max(pathMaxY.get(bot.id) ?? 0, pathMax));
+          }
+          if (bot.goalNode >= 0) {
+            const g = ai.nav[bot.goalNode];
+            if (g && g.y > 2) goalHigh += 1; else goalLow += 1;
+          }
         }
       }
       return true;
@@ -314,8 +358,22 @@ async function runCombatSoak(engine, options = {}) {
     killsByZone: report.telemetry.killsByZone,
     killsByTeam: report.telemetry.killsByTeam,
     stuckByZone: report.telemetry.stuckByZone,
+    lifetimeSeconds: report.telemetry.lifetimeSeconds,
+    killerDistanceM: report.telemetry.killerDistanceM,
+    pathAdvances: report.telemetry.pathAdvances,
+    stuckPerThousandPathAdvances: report.telemetry.stuckPerThousandPathAdvances,
     stuckSamples: report.telemetry.stuckSamples,
+    spawnDeathDetail: report.telemetry.spawnDeathDetail,
     zoneOccupancy: Object.fromEntries(zoneOccupancy),
+    goalZones: Object.fromEntries(goalZones),
+    lanes: Object.fromEntries(lanes),
+    elevatedOccupancy: Object.fromEntries(elevatedSamples),
+    maxYByBot: Object.fromEntries([...maxY].map(([k, v]) => [k, Number(v.toFixed(2))])),
+    stairNodeTargeting: stairTargeting,
+    highNodeTargeting: highTargeting,
+    pathMaxYByBot: Object.fromEntries([...pathMaxY].map(([k, v]) => [k, Number(v.toFixed(2))])),
+    goalNodeHigh: goalHigh,
+    goalNodeLow: goalLow,
     playerDeaths: recorder.playerDeaths,
     playerRespawns: recorder.playerRespawns,
     nonFiniteState: nonFinite.length > 0,

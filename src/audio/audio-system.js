@@ -1,3 +1,9 @@
+// Budget tuned down after an intermittent 'AudioContext encountered an error
+// from the audio device or the WebAudio renderer' fault during full 6v6 combat:
+// twelve combatants bursting at once can request voices faster than the renderer
+// retires them, and once the context faults the whole match goes silent.
+const VOICE_BUDGET = 24;
+
 export class AudioSystem {
   static id = 'audio';
   static deps = ['player', 'weapons', 'physics'];
@@ -22,7 +28,7 @@ export class AudioSystem {
     window.addEventListener('keydown', this.unlock, { passive: true });
     this.unsubscribers = [
       ctx.events.on('weapon:fired', () => this.gunshot()),
-      ctx.events.on('ai:fired', (event) => this.enemyGunshot(event.origin)),
+      ctx.events.on('ai:fired', (event) => this.combatantGunshot(event.origin, event.team)),
       ctx.events.on('weapon:dryfire', () => this.click()),
       ctx.events.on('weapon:reload', (event) => this.mechanical(event.phase)),
       ctx.events.on('projectile:impact', (event) => this.impact(event.surface, event.point)),
@@ -159,7 +165,21 @@ export class AudioSystem {
     this.lastFootstepSurface = null;
   }
 
-  noiseBurst({ duration = 0.1, gain = 0.2, highpass = 80, lowpass = 9000, delay = 0, position = null, spatial = false, reverb = 0.08, maxDistance = 45 } = {}) {
+  // Twelve combatants firing bursts can request far more simultaneous voices
+  // than the WebAudio renderer will service; overloading it makes the whole
+  // context fault out and the match goes silent. Sounds are budgeted, and
+  // spatial ones outside their own falloff are dropped before any node is built.
+  canPlay(position, maxDistance, priority = 0) {
+    if (!this.audio) return false;
+    if (this.activeVoices >= VOICE_BUDGET - priority * 8) return false;
+    if (!position) return true;
+    const camera = this.ctx.camera;
+    const dx = position.x - camera.position.x; const dy = position.y - camera.position.y; const dz = position.z - camera.position.z;
+    return (dx * dx + dy * dy + dz * dz) <= maxDistance * maxDistance;
+  }
+
+  noiseBurst({ duration = 0.1, gain = 0.2, highpass = 80, lowpass = 9000, delay = 0, position = null, spatial = false, reverb = 0.08, maxDistance = 45, priority = 0 } = {}) {
+    if (!this.canPlay(spatial ? position : null, maxDistance, priority)) return;
     if (!this.audio || this.audio.state !== 'running') return;
     const now = this.audio.currentTime + delay;
     const source = this.audio.createBufferSource();
@@ -176,6 +196,7 @@ export class AudioSystem {
   }
 
   tone(frequency, duration, gain, type = 'sine', delay = 0, endFrequency = null, options = {}) {
+    if (!this.canPlay(options.spatial ? options.position : null, options.maxDistance ?? 45, options.priority ?? 0)) return;
     if (!this.audio || this.audio.state !== 'running') return;
     const now = this.audio.currentTime + delay;
     const oscillator = this.audio.createOscillator();
@@ -196,10 +217,46 @@ export class AudioSystem {
     this.noiseBurst({ duration: 0.32, gain: 0.13, highpass: 100, lowpass: 1800, delay: 0.045, reverb: 0.22 });
   }
 
-  enemyGunshot(position) {
+  // Every other combatant's rifle used to play one identical sample regardless
+  // of range or side, so a firefight forty metres away sounded exactly like one
+  // at arm's length and there was no way to tell an ally from an enemy by ear.
+  // Distance now crossfades a sharp near crack against a muffled far thump with
+  // a longer tail, and the two teams get slightly different timbres.
+  combatantGunshot(position, team = 'bravo') {
     this.enemyShotEvents += 1;
-    this.noiseBurst({ duration: 0.06, gain: 0.72, highpass: 170, lowpass: 9000, position, spatial: true, reverb: 0.16, maxDistance: 60 });
-    this.tone(128, 0.11, 0.28, 'sawtooth', 0, 52, { position, spatial: true, reverb: 0.11, maxDistance: 60 });
+    if (!this.audio) return;
+    const camera = this.ctx.camera;
+    const distance = position
+      ? Math.hypot(position.x - camera.position.x, position.y - camera.position.y, position.z - camera.position.z)
+      : 30;
+    const near = Math.max(0, Math.min(1, 1 - (distance - 8) / 34));
+    const far = 1 - near;
+    const ally = team === 'alpha';
+    // Allied fire sits a little brighter and quieter so it reads as friendly.
+    const bodyHz = ally ? 148 : 124;
+    const gain = ally ? 0.56 : 0.72;
+
+    // Near layer: transient crack with high content that the air strips out
+    // with distance.
+    if (near > 0.02) {
+      this.noiseBurst({
+        duration: 0.055, gain: gain * near, highpass: ally ? 210 : 170, lowpass: 4000 + near * 7000,
+        position, spatial: true, reverb: 0.14, maxDistance: 70, priority: 1,
+      });
+      this.tone(bodyHz, 0.1, 0.3 * near, 'sawtooth', 0, 52, { position, spatial: true, reverb: 0.1, maxDistance: 70, priority: 2 });
+    }
+    // Far layer: the low thump plus a longer, wetter tail that carries.
+    if (far > 0.02) {
+      this.noiseBurst({
+        duration: 0.09, gain: 0.42 * far, highpass: 60, lowpass: 900,
+        position, spatial: true, reverb: 0.3, maxDistance: 110, priority: 2,
+      });
+      // Tail layer is the first thing sacrificed when the budget is tight.
+      this.noiseBurst({
+        duration: 0.34, gain: 0.16 * far, highpass: 90, lowpass: 1500, delay: 0.05 + far * 0.06,
+        position, spatial: true, reverb: 0.46, maxDistance: 110, priority: 3,
+      });
+    }
   }
 
   click() { this.tone(1500, 0.018, 0.08, 'square', 0, null, { reverb: 0.02 }); }

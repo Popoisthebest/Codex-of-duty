@@ -8,6 +8,8 @@ export function createHarnessBridge({
   runAction,
   getGameplayReport,
   worldMetrics,
+  setProfiling,
+  getFrameProfile,
   runScenario,
   stagePlayerView,
   enterMatchMode,
@@ -85,6 +87,14 @@ export function createHarnessBridge({
 
     async runScenario(name, options = {}) {
       return serialize(async () => runScenario?.(name, options));
+    },
+
+    setProfiling(enabled) {
+      return setProfiling?.(enabled) ?? false;
+    },
+
+    getFrameProfile() {
+      return getFrameProfile?.() ?? null;
     },
 
     stagePlayerView(options = {}) {

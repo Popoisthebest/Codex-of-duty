@@ -9,9 +9,22 @@ const LEGACY_SPAWNS = [
   [-5.2, 0, -6.2],
 ];
 
+// Team identification is a fairness requirement, not decoration. The previous
+// palettes differed by under 2% luminance (olive 0x4b5545 vs brown 0x5a4a44) and
+// both sat inside the environment's own fabric/wood range, so at 25 m the two
+// sides were indistinguishable. The HUD teaches cyan for Alpha and orange for
+// Bravo everywhere, so the characters now carry that same language: a cool
+// desaturated-teal kit against a warm rust kit, plus an emissive marker band
+// that stays legible at range and in shadow.
 const TEAM_PALETTE = {
-  alpha: { uniform: 0x4b5545, vest: 0x252b24, skin: 0x7e523b, visor: 0x11191a, gear: 0x625b43, lens: 0x31505a, emissive: 0x0a2027 },
-  bravo: { uniform: 0x5a4a44, vest: 0x2a2320, skin: 0x8a6247, visor: 0x140f0f, gear: 0x6d4f3a, lens: 0x6a2a22, emissive: 0x2a0a08 },
+  alpha: {
+    uniform: 0x3d5a5c, vest: 0x1b2c30, skin: 0x7e523b, visor: 0x0e1a1c,
+    gear: 0x4a6d6b, lens: 0x5fe3e0, emissive: 0x1c6f6d, marker: 0x83e6e4, markerEmissive: 0x2ad4d0,
+  },
+  bravo: {
+    uniform: 0x6d3a2a, vest: 0x2e1a14, skin: 0x8a6247, visor: 0x1a0f0c,
+    gear: 0x8a4a30, lens: 0xff8b5a, emissive: 0x7a2a12, marker: 0xff8b5a, markerEmissive: 0xd44a1c,
+  },
 };
 
 // Lanes give each bot a preferred route family. Bots are assigned round-robin,
@@ -30,6 +43,7 @@ const LANES = {
 };
 
 const LANE_ORDER = ['central', 'west', 'east'];
+const INDOOR_ZONES = new Set(['depot', 'east-offices', 'arcade']);
 
 const ROSTER = [
   ...Array.from({ length: 5 }, (_, i) => ({ id: `alpha-${i}`, team: 'alpha', legacy: -1 })),
@@ -37,10 +51,16 @@ const ROSTER = [
 ];
 
 const PERCEPTION_STRIDE = 4;
-const SIGHT_RANGE = 62;
-const FIRE_RANGE = 46;
+// Sight range is a pacing control, not a realism knob. At 62 m on a ~100 m map a
+// bot could see across most of the district, so it was almost always in an
+// engage/search state and almost never executed a route. That flattened the
+// match into a permanent brawl around the central junction and meant no bot ever
+// used a staircase, an interior, or an elevated firing position.
+const SIGHT_RANGE = 42;
+const FIRE_RANGE = 36;
 const ENGAGE_RANGE = 22;
 const PATH_ARRIVE = 1.1;
+const PATH_ARRIVE_STAIR = 0.42;
 const STUCK_SECONDS = 1.2;
 
 // Small binary heap so A* over a few thousand nav nodes stays cheap enough to
@@ -132,7 +152,10 @@ export class AISystem {
         skin: new THREE.MeshStandardMaterial({ color: palette.skin, roughness: 0.76 }),
         visor: new THREE.MeshStandardMaterial({ color: palette.visor, roughness: 0.18, metalness: 0.62 }),
         gear: new THREE.MeshStandardMaterial({ color: palette.gear, roughness: 0.86, metalness: 0.03 }),
-        lens: new THREE.MeshStandardMaterial({ color: palette.lens, roughness: 0.08, metalness: 0.5, emissive: palette.emissive, emissiveIntensity: 0.75 }),
+        lens: new THREE.MeshStandardMaterial({ color: palette.lens, roughness: 0.08, metalness: 0.5, emissive: palette.emissive, emissiveIntensity: 0.9 }),
+        // Marker bands are self-lit so a combatant stays identifiable in shadow,
+        // indoors and at the far end of the engagement range.
+        marker: new THREE.MeshStandardMaterial({ color: palette.marker, roughness: 0.4, metalness: 0.1, emissive: palette.markerEmissive, emissiveIntensity: 2.4 }),
       };
       for (const material of Object.values(set)) this.resources.add(material);
       this.teamMaterials[team] = set;
@@ -180,6 +203,9 @@ export class AISystem {
     push(new THREE.SphereGeometry(0.225, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.55), 'vest', 'head', 'metal', at(0, 1.79, 0));
     push(new THREE.BoxGeometry(0.22, 0.12, 0.06), 'vest', 'head', 'metal', at(0, 1.66, -0.18));
     push(new THREE.CylinderGeometry(0.25, 0.25, 0.045, 16), 'vest', 'head', 'metal', at(0, 1.82, -0.01));
+    // Helmet stripe and shoulder bands in team colour.
+    push(new THREE.BoxGeometry(0.075, 0.055, 0.42), 'marker', 'head', 'metal', at(0, 1.9, 0));
+    push(new THREE.BoxGeometry(0.16, 0.075, 0.3), 'marker', 'torso', 'fabric', at(0, 1.38, 0.16));
     push(new THREE.BoxGeometry(0.28, 0.08, 0.05), 'visor', 'head', 'glass', at(0, 1.77, -0.18));
     push(new THREE.BoxGeometry(0.28, 0.075, 0.04), 'lens', 'head', 'glass', at(0, 1.77, -0.215));
     push(new THREE.BoxGeometry(0.42, 0.55, 0.2, 2, 2, 1), 'gear', 'torso', 'fabric', at(0, 1.12, 0.28));
@@ -187,6 +213,7 @@ export class AISystem {
     for (let p = -1; p <= 1; p += 1) push(new THREE.BoxGeometry(0.14, 0.2, 0.09), 'gear', 'torso', 'fabric', at(p * 0.16, 1.03, -0.29));
     for (const x of [-0.31, 0.31]) {
       push(new THREE.BoxGeometry(0.2, 0.2, 0.26, 2, 2, 2), 'vest', 'limb', 'fabric', at(x, 1.39, -0.02, 0, 0, x < 0 ? -0.18 : 0.18));
+      push(new THREE.BoxGeometry(0.215, 0.07, 0.275), 'marker', 'limb', 'fabric', at(x, 1.46, -0.02, 0, 0, x < 0 ? -0.18 : 0.18));
       push(new THREE.CapsuleGeometry(0.085, 0.24, 4, 8), 'uniform', 'limb', 'fabric', at(x, 1.27, -0.12, -0.72, 0, x < 0 ? -0.32 : 0.32));
       push(new THREE.CapsuleGeometry(0.075, 0.25, 4, 8), 'gear', 'limb', 'fabric', at(x * 0.72, 1.1, -0.36, -1.15, 0, x < 0 ? 0.28 : -0.28));
       push(new THREE.BoxGeometry(0.14, 0.13, 0.1), 'vest', 'limb', 'fabric', at(x * 0.84, 1.13, -0.28));
@@ -532,6 +559,16 @@ export class AISystem {
       return -1;
     }
     bot.goalZone = zone;
+    // Prefer high ground. Catwalks, terraces, the overpass and the upper floors
+    // all overlook contested space, so a bot heading for one is making a normal
+    // tactical choice. Picking uniformly instead meant elevation lost by sheer
+    // node count (east-terrace has 368 nodes and only 62 of them are elevated),
+    // so no bot ever used a firing position above ground level.
+    const bias = INDOOR_ZONES.has(zone) ? 0.72 : 0.45;
+    if (this.rng.next() < bias) {
+      const elevated = candidates.filter((id) => this.nav[id].y > 2);
+      if (elevated.length) return elevated[Math.floor(this.rng.next() * elevated.length)];
+    }
     return candidates[Math.floor(this.rng.next() * candidates.length)];
   }
 
@@ -563,11 +600,22 @@ export class AISystem {
     const dx = node.x - bot.root.position.x;
     const dz = node.z - bot.root.position.z;
     const distance = Math.hypot(dx, dz);
-    if (distance < PATH_ARRIVE && Math.abs(node.y - bot.root.position.y) < 1.2) {
+    // Stair treads are ~0.7 m apart, closer than the open-ground arrival radius.
+    // Using one radius for both let a bot at the foot of a flight mark every
+    // tread "arrived" in a single frame and walk on past the stairs, so no bot
+    // ever reached an upper level anywhere on the map.
+    const arrive = node.stair ? PATH_ARRIVE_STAIR : PATH_ARRIVE;
+    const heightTolerance = node.stair ? 0.5 : 1.2;
+    if (distance < arrive && Math.abs(node.y - bot.groundY) < heightTolerance) {
       bot.pathIndex += 1;
+      this.ctx.peek('match')?.reportPathAdvance();
       return true;
     }
-    if (distance > 0.001) this.moveBot(bot, dx / distance, dz / distance, speed * step, node.y);
+    if (distance > 0.001) {
+      this.steerTarget = node;
+      this.moveBot(bot, dx / distance, dz / distance, speed * step, node.y);
+      this.steerTarget = null;
+    }
     bot.root.rotation.y = Math.atan2(-dx, -dz);
     return true;
   }
@@ -581,16 +629,25 @@ export class AISystem {
     physics.resolveActor(bot.root.position, 0.32);
     let moved = Math.hypot(bot.root.position.x - beforeX, bot.root.position.z - beforeZ);
     if (moved < amount * 0.3) {
-      // Slide along the obstruction rather than grinding into it, and try the
-      // other tangent too: a single fixed slide direction wedges a bot into any
-      // pocket narrower than its own body.
+      // Blocked. Try both tangents and keep whichever ends up closest to where
+      // this bot is actually trying to get. Committing to a fixed strafe sign
+      // made bots slide back and forth across an obstruction (the market arch
+      // pillar in particular) instead of rounding it.
+      const goal = this.steerTarget;
+      let bestX = beforeX; let bestZ = beforeZ; let bestScore = -Infinity; let bestSide = bot.strafe;
       for (const side of [bot.strafe, -bot.strafe]) {
         bot.root.position.x = beforeX + dirZ * side * amount;
         bot.root.position.z = beforeZ - dirX * side * amount;
         physics.resolveActor(bot.root.position, 0.32);
-        moved = Math.hypot(bot.root.position.x - beforeX, bot.root.position.z - beforeZ);
-        if (moved >= amount * 0.3) { bot.strafe = side; break; }
+        const slid = Math.hypot(bot.root.position.x - beforeX, bot.root.position.z - beforeZ);
+        const closer = goal
+          ? -Math.hypot(goal.x - bot.root.position.x, goal.z - bot.root.position.z)
+          : 0;
+        const score = slid * 10 + closer;
+        if (score > bestScore) { bestScore = score; bestX = bot.root.position.x; bestZ = bot.root.position.z; bestSide = side; }
       }
+      bot.root.position.x = bestX; bot.root.position.z = bestZ; bot.strafe = bestSide;
+      moved = Math.hypot(bestX - beforeX, bestZ - beforeZ);
     }
     const ground = physics.groundHeightAt(bot.root.position.x, bot.root.position.z, bot.groundY, targetY == null ? 0.46 : 0.7);
     bot.groundY = ground;
@@ -942,8 +999,10 @@ export class AISystem {
     }));
   }
 
-  // Aim assist for deterministic harness actions: the closest visible opponent.
-  getAimPoint() {
+  // Aim assist for deterministic harness actions: the closest visible opponent
+  // within range. The range cap matters — without it a scripted driver engages
+  // targets right across the district.
+  getAimPoint(maxRange = 90) {
     const player = this.ctx.get('player');
     const physics = this.ctx.get('physics');
     this.eye.copy(player.position); this.eye.y += player.eyeHeight;
@@ -953,7 +1012,7 @@ export class AISystem {
       this.target.copy(bot.root.position); this.target.y += 1.74;
       this.ray.subVectors(this.target, this.eye);
       const distance = this.ray.length();
-      if (distance >= bestDistance) continue;
+      if (distance > maxRange || distance >= bestDistance) continue;
       this.ray.multiplyScalar(1 / Math.max(0.0001, distance));
       const obstruction = physics.raycastWorldDistance(this.eye, this.ray, distance);
       if (obstruction != null && obstruction < distance - 0.3) continue;

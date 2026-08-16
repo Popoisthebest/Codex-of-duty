@@ -112,6 +112,14 @@ await withDevServer(async () => {
 
     assertNoBrowserErrors(errors);
 
+    // IMPORTANT: this tool drives the deterministic harness. It awaits a rAF and
+    // then runs a gameplay frame in a promise continuation *after* the callback
+    // returns, so the interval between callbacks includes promise scheduling and
+    // whole vsync intervals missed by the harness driver, not by the game. Those
+    // deltas are reported as `harnessRafDeltaMs` and must not be read as frame
+    // time. For production frame time use `npm run harness:frame`, which measures
+    // the real Engine.start() loop and reported 0 frames over 25 ms where this
+    // tool reported a p95 of ~34 ms on the same build.
     const s = summarize(result.durations);
     const cpu = summarize(result.stepCpuMs);
     const report = {
@@ -125,14 +133,10 @@ await withDevServer(async () => {
         warmup,
         frames,
       },
-      frameMs: s,
+      harnessRafDeltaMs: s,
       stepCpuMs: cpu,
-      approxFps: {
-        p50: s.p50 ? 1000 / s.p50 : null,
-        p95FrameEquivalent: s.p95 ? 1000 / s.p95 : null,
-        p99FrameEquivalent: s.p99 ? 1000 / s.p99 : null,
-      },
-      longFrames: {
+      note: 'harnessRafDeltaMs measures the harness stepping loop, not production frame time. Use npm run harness:frame for that.',
+      longHarnessDeltas: {
         over33_3ms: result.durations.filter((x) => x > 33.3).length,
         over50ms: result.durations.filter((x) => x > 50).length,
         over100ms: result.durations.filter((x) => x > 100).length,
@@ -151,9 +155,10 @@ await withDevServer(async () => {
 
     console.log(JSON.stringify({
       settings: report.settings,
-      frameMs: report.frameMs,
+      harnessRafDeltaMs: report.harnessRafDeltaMs,
       stepCpuMs: report.stepCpuMs,
-      longFrames: report.longFrames,
+      longHarnessDeltas: report.longHarnessDeltas,
+      note: report.note,
       finalMetrics: report.finalMetrics,
       boot: report.boot,
       actionMarkers: report.actionMarkers,

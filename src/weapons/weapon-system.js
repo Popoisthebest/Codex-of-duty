@@ -284,7 +284,8 @@ export class WeaponSystem {
   }
 
   updateViewmodel(_step, ctx) {
-    const speed = Math.hypot(ctx.get('player').velocity.x, ctx.get('player').velocity.z);
+    const player = ctx.get('player');
+    const speed = Math.hypot(player.velocity.x, player.velocity.z);
     const t = ctx.time.elapsed;
     const bob = Math.min(1, speed / 4.5);
     const hipX = 0.34;
@@ -297,7 +298,18 @@ export class WeaponSystem {
       THREE.MathUtils.lerp(-0.03, -0.48, this.adsBlend) + this.recoilPitch * 0.35,
     );
     const reload = this.reloading ? Math.sin(Math.min(1, this.reloadTimer / this.reloadDuration) * Math.PI) : 0;
-    this.group.rotation.set(-0.035 - reload * 0.24, -0.025 + reload * 0.42, -0.035 + reload * 0.24);
+    // Sprint drops and cants the rifle. Without it a sprinting player holds a
+    // perfectly level weapon, which is the single clearest "no movement feel"
+    // tell in a first-person game.
+    const sprint = player.sprintBlend ?? 0;
+    this.group.position.y -= sprint * 0.16;
+    this.group.position.x += sprint * 0.05;
+    this.group.position.z += sprint * 0.06 + (player.landDip ?? 0) * 0.9;
+    this.group.rotation.set(
+      -0.035 - reload * 0.24 + sprint * 0.20,
+      -0.025 + reload * 0.42 - sprint * 0.26,
+      -0.035 + reload * 0.24 + sprint * 0.34,
+    );
     this.muzzleFlash.visible = this.muzzleTimer > 0 || this.fxShowcase;
     this.muzzleStar.visible = this.muzzleFlash.visible;
     this.muzzleLight.intensity = this.muzzleFlash.visible ? 2.8 : 0;
@@ -307,7 +319,7 @@ export class WeaponSystem {
       this.muzzleStar.rotation.z = (this.shotIndex * 1.618) % (Math.PI * 2);
       this.muzzleStar.scale.setScalar(0.82 + (this.shotIndex % 2) * 0.16);
     }
-    ctx.get('player').setAimZoom(this.adsBlend);
+    player.setAimZoom(this.adsBlend);
   }
 
   snapshot() {
@@ -319,6 +331,7 @@ export class WeaponSystem {
       reloadPhase: this.getReloadPhase(),
       ads: this.ads,
       adsBlend: this.adsBlend,
+      sprintPose: Number((this.ctx.peek('player')?.sprintBlend ?? 0).toFixed(3)),
       shotsFired: this.shotIndex,
       projectileModel: 'instant-hitscan-with-tracer',
     };

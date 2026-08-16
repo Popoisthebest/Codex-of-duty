@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { GpuProfiler } from './gpu-profiler.js';
 
 const SHOT_POSES = {
   overview: { position: [0, 13.5, 19], target: [0, 0.8, -5], fov: 58 },
@@ -44,6 +45,7 @@ export class RenderSystem {
     this.lights = [];
     this.useCaptureCamera = false;
     this.showViewmodel = true;
+    this.gpu = new GpuProfiler(this.renderer);
   }
 
   // Live-match capture and playback follow the player camera rather than the
@@ -67,7 +69,22 @@ export class RenderSystem {
     const camera = this.useCaptureCamera ? this.captureCamera : ctx.camera;
     this.renderer.setRenderTarget(null);
     this.renderer.clear();
+    // The shadow map is rendered inside renderer.render(). Timing it separately
+    // needs the shadow update to be a distinct submission, so while profiling the
+    // shadow pass is driven explicitly and the world pass then reuses it. Outside
+    // profiling the renderer keeps its normal automatic behaviour.
+    if (this.gpu.enabled) {
+      this.gpu.begin('shadow');
+      this.renderer.shadowMap.autoUpdate = true;
+      this.renderer.shadowMap.needsUpdate = true;
+      this.renderer.render(ctx.scene, this.shadowProbeCamera(camera));
+      this.gpu.end();
+      this.renderer.shadowMap.autoUpdate = false;
+      this.renderer.clear();
+    }
+    this.gpu.begin('world');
     this.renderer.render(ctx.scene, camera);
+    this.gpu.end();
     // renderer.info resets at the start of every render() call, so the world
     // pass has to be sampled here. Reading it after the viewmodel pass only ever
     // reports the gun, which makes a district look free.
@@ -76,9 +93,35 @@ export class RenderSystem {
     this.worldTriangles = info.triangles;
     if (this.showViewmodel && ctx.viewScene.children.length) {
       this.renderer.clearDepth();
+      this.gpu.begin('viewmodel');
       this.renderer.render(ctx.viewScene, ctx.viewCamera);
+      this.gpu.end();
+    }
+    // No post-processing passes are registered; `passes` is empty. Timing an
+    // empty pass would report a fabricated zero, so it is simply not measured.
+    if (this.gpu.enabled) {
+      this.renderer.shadowMap.autoUpdate = true;
+      this.gpu.poll();
+      this.gpu.closeFrame();
     }
   }
+
+  // A degenerate camera for the shadow-only submission: the shadow map is built
+  // from the light's own frusta, so the view camera here only needs to be cheap.
+  shadowProbeCamera(source) {
+    this.shadowProbe ??= new THREE.PerspectiveCamera(1, 1, 0.05, 0.06);
+    this.shadowProbe.position.copy(source.position);
+    this.shadowProbe.quaternion.copy(source.quaternion);
+    this.shadowProbe.updateMatrixWorld();
+    return this.shadowProbe;
+  }
+
+  // The camera actually being rendered this frame, so other systems can do
+  // camera-relative work (light pooling) without duplicating the shot logic.
+  activeCamera(ctx) { return this.useCaptureCamera ? this.captureCamera : ctx.camera; }
+
+  setGpuProfiling(enabled) { return this.gpu.setEnabled(enabled); }
+  getGpuReport() { return this.gpu.report(); }
 
   resize(width, height, ctx) {
     const aspect = width / Math.max(1, height);
@@ -129,6 +172,7 @@ export class RenderSystem {
   }
 
   dispose() {
+    this.gpu.dispose();
     this.renderer.dispose();
   }
 }
