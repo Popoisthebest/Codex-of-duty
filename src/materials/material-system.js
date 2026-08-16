@@ -33,7 +33,14 @@ export class MaterialSystem {
     const darkGlass = glass.clone(); darkGlass.color.set(0x16262c); darkGlass.opacity = 0.76;
     this.materials.set('glass', glass);
     this.materials.set('darkGlass', darkGlass);
-    this.materials.set('warmWindow', new THREE.MeshStandardMaterial({ color: 0x44372e, emissive: 0xff8a3d, emissiveIntensity: 0.48, roughness: 0.5, metalness: 0.04 }));
+    // A lit window used to be a flat emissive colour, which reads as an orange
+    // rectangle the moment the player is close to a facade. Painting a shallow
+    // interior - falloff from the ceiling, blinds, a furniture silhouette - makes
+    // the same two triangles read as a room. Three variants stop a facade from
+    // looking like a repeated stencil.
+    for (let variant = 0; variant < 3; variant += 1) {
+      this.materials.set(variant === 0 ? 'warmWindow' : `warmWindow${variant}`, this.createWindowMaterial(variant));
+    }
     this.materials.set('emissive', new THREE.MeshStandardMaterial({ color: 0x2a4c4c, emissive: 0x6ee9df, emissiveIntensity: 2.8, roughness: 0.35 }));
     this.materials.set('lamp', new THREE.MeshStandardMaterial({ color: 0xffd39a, emissive: 0xff9b3d, emissiveIntensity: 4.5, roughness: 0.3 }));
     this.materials.set('rubber', new THREE.MeshStandardMaterial({ color: 0x171b1a, roughness: 0.82, metalness: 0.02 }));
@@ -81,6 +88,49 @@ export class MaterialSystem {
   }
 
   get(name) { const material = this.materials.get(name); if (!material) throw new Error(`Unknown procedural material: ${name}`); return material; }
+
+  createWindowMaterial(variant = 0) {
+    const w = 64; const h = 96;
+    const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
+    const c = canvas.getContext('2d');
+    // Warm interior, brightest near the ceiling where the room light hangs.
+    const glow = c.createLinearGradient(0, 0, 0, h);
+    glow.addColorStop(0, '#ffb066'); glow.addColorStop(0.45, '#ff8a3d'); glow.addColorStop(1, '#7d3a17');
+    c.fillStyle = glow; c.fillRect(0, 0, w, h);
+    // Off-centre hot spot: the bulb itself, not a uniform wash.
+    const bulbX = variant === 1 ? w * 0.33 : w * 0.6;
+    const bulb = c.createRadialGradient(bulbX, h * 0.22, 1, bulbX, h * 0.22, w * 0.75);
+    bulb.addColorStop(0, 'rgba(255,236,196,0.95)'); bulb.addColorStop(1, 'rgba(255,150,80,0)');
+    c.fillStyle = bulb; c.fillRect(0, 0, w, h);
+    if (variant === 0) {
+      // Half-drawn blinds.
+      c.fillStyle = 'rgba(38,24,16,0.62)';
+      for (let y = 4; y < h * 0.52; y += 6) c.fillRect(0, y, w, 3);
+    } else if (variant === 1) {
+      // A curtain pulled to one side.
+      c.fillStyle = 'rgba(30,18,12,0.72)'; c.fillRect(w * 0.62, 0, w * 0.38, h);
+      c.fillStyle = 'rgba(52,32,20,0.5)'; c.fillRect(w * 0.56, 0, w * 0.08, h);
+    } else {
+      // Furniture silhouette against the light.
+      c.fillStyle = 'rgba(26,16,10,0.78)';
+      c.fillRect(w * 0.1, h * 0.58, w * 0.42, h * 0.42);
+      c.fillRect(w * 0.62, h * 0.44, w * 0.2, h * 0.56);
+    }
+    // Grime and a frame shadow so the pane is not perfectly clean.
+    c.fillStyle = 'rgba(20,12,8,0.35)';
+    for (let i = 0; i < 26; i += 1) {
+      const x = (i * 37 + variant * 11) % w; const y = (i * 53 + variant * 17) % h;
+      c.fillRect(x, y, 2 + (i % 3), 1 + (i % 2));
+    }
+    c.strokeStyle = 'rgba(18,11,7,0.85)'; c.lineWidth = 3; c.strokeRect(1.5, 1.5, w - 3, h - 3);
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace; texture.anisotropy = this.anisotropy;
+    this.textures.push(texture);
+    return new THREE.MeshStandardMaterial({
+      map: texture, emissiveMap: texture, color: 0xffffff,
+      emissive: 0xffb271, emissiveIntensity: 0.62, roughness: 0.52, metalness: 0.04,
+    });
+  }
 
   createSign(text, background = '#18383a', foreground = '#d8e9df') {
     const canvas = document.createElement('canvas'); canvas.width = 512; canvas.height = 128; const context = canvas.getContext('2d');

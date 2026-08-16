@@ -7,6 +7,12 @@ const approach = (value, target, amount) => {
 
 // The deterministic pose every v2 harness shot and playtest scenario starts from.
 const LEGACY_SPAWN = [0, 0, 6];
+// Recovery. Without it the player never loses a fight - they bleed out by chip
+// damage accumulated across a whole life, which makes every duel feel
+// consequence-free and every death feel arbitrary.
+const REGEN_DELAY = 4.5;        // seconds out of contact before recovery starts
+const REGEN_PER_SECOND = 18;
+const REGEN_CEILING = 100;
 
 // v3 scenarios run a real match, so they use match-selected spawns instead.
 const MATCH_SCENARIOS = new Set(['tdm-core', 'combat-soak']);
@@ -28,6 +34,7 @@ export class PlayerSystem {
     this.yaw = 0;
     this.pitch = 0;
     this.health = 100;
+    this.regenDelay = 0;
     this.dead = false;
     this.groundY = 0;
     this.stance = 'stand';
@@ -78,6 +85,7 @@ export class PlayerSystem {
     this.yaw = spawn.yaw ?? 0;
     this.pitch = 0;
     this.health = 100;
+    this.regenDelay = 0;
     this.dead = false;
     this.groundY = spawn.y ?? 0;
     this.stance = 'stand';
@@ -105,6 +113,7 @@ export class PlayerSystem {
     this.yaw = point.yaw ?? this.yaw;
     this.pitch = 0;
     this.health = 100;
+    this.regenDelay = 0;
     this.dead = false;
     this.groundY = point.y ?? 0;
     this.grounded = true;
@@ -125,6 +134,17 @@ export class PlayerSystem {
   }
 
   fixedUpdate(step, ctx) {
+    if (!this.dead) {
+      if (this.regenDelay > 0) this.regenDelay = Math.max(0, this.regenDelay - step);
+      else if (this.health < REGEN_CEILING) {
+        const before = this.health;
+        this.health = Math.min(REGEN_CEILING, this.health + REGEN_PER_SECOND * step);
+        // The HUD only redraws on change, so tell it when recovery crosses a point.
+        if (Math.floor(this.health) !== Math.floor(before)) {
+          ctx.events.emit('player:health', { health: this.health, regenerating: true });
+        }
+      }
+    }
     const input = ctx.input;
     this.damageTimer = Math.max(0, this.damageTimer - step);
     if (this.dead) {
@@ -221,6 +241,8 @@ export class PlayerSystem {
   applyDamage(amount, source = 'unknown', hitZone = null) {
     if (this.dead) return;
     this.health = Math.max(0, this.health - Math.max(0, amount));
+    // Taking fire suspends recovery, so a fight is still lost by losing it.
+    this.regenDelay = REGEN_DELAY;
     this.damageTimer = 0.6;
     const shooter = this.ctx.peek('ai')?.byId?.get?.(source);
     if (shooter) {

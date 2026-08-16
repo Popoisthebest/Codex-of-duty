@@ -1,3 +1,5 @@
+import { CombatHeat } from './combat-heat.js';
+
 const TEAM_IDS = ['alpha', 'bravo'];
 
 const TEAM_META = {
@@ -8,10 +10,16 @@ const TEAM_META = {
 const ALPHA_BOT_NAMES = ['VOSS', 'KERR', 'IDRIS', 'MALIK', 'RENN'];
 const BRAVO_BOT_NAMES = ['SAHIR', 'DRAKO', 'OSEI', 'NAVID', 'TULLY', 'REYES'];
 
-const SCORE_LIMIT = 100;
+// Calibrated against measured throughput, not guessed. Production matches were
+// producing ~0.107 kills/s for the leading team, so a 100-kill target needed
+// ~937 s inside a 600 s match: four of five matches expired on the clock 32-55
+// points short of the number the HUD promised, and MATCH POINT (95+) never once
+// fired. 50 puts the leader at the target around the 7-minute mark, so the match
+// ends on the condition the player was actually given.
+const SCORE_LIMIT = 50;
 const TIME_LIMIT = 600;
 const PREMATCH_SECONDS = 3;
-const RESPAWN_SECONDS = 4.5;
+const RESPAWN_SECONDS = 3.2;
 const SPAWN_PROTECTION = 1.4;
 const SPAWN_DEATH_WINDOW = 5;
 const KILL_FEED_LIMIT = 6;
@@ -20,8 +28,14 @@ const KILL_FEED_LIMIT = 6;
 // range (42 m is the acquisition limit, but a spawn at 22 m was inside it often
 // enough to push spawn deaths to 20% of all deaths), while IDEAL keeps re-entry
 // to a handful of seconds.
-const MIN_SPAWN_DISTANCE = 30;
-const IDEAL_SPAWN_DISTANCE = 40;
+// These were raised to 30/40 against a spawn-death signal that later proved to be
+// an artifact of an aimbot test driver. Spawn deaths now measure 0.43% across six
+// seeds, so the distance is bought back to cut the ~13 s of dead time each death
+// was costing.
+const MIN_SPAWN_DISTANCE = 26;
+const IDEAL_SPAWN_DISTANCE = 34;
+const SPAWN_YAW_CANDIDATES = 12;
+const SPAWN_CLEARANCE_TARGET = 26;
 
 // Authoritative team-deathmatch state. Everything the HUD, the harness report
 // and the scenario runner read comes from here; no system keeps a private score.
@@ -42,6 +56,20 @@ export class MatchSystem {
     this.addParticipant({ id: 'player', team: 'alpha', kind: 'human', name: 'OPERATOR' });
     for (let i = 0; i < ALPHA_BOT_NAMES.length; i += 1) this.addParticipant({ id: `alpha-${i}`, team: 'alpha', kind: 'bot', name: ALPHA_BOT_NAMES[i] });
     for (let i = 0; i < BRAVO_BOT_NAMES.length; i += 1) this.addParticipant({ id: `bravo-${i}`, team: 'bravo', kind: 'bot', name: BRAVO_BOT_NAMES[i] });
+    // Heat is fed only by things that are observable in the world: gunfire,
+    // deaths and confirmed sightings. Nothing writes an unseen enemy's position.
+    // One field per team, recording where *that* team has been observed acting.
+    // A single shared field was worse than useless: it counted a bot's own
+    // squad's gunfire as evidence of enemy presence, so teams walked toward
+    // themselves and contact fell.
+    this.heat = { alpha: new CombatHeat(this.world.getBounds()), bravo: new CombatHeat(this.world.getBounds()) };
+    this.shotOff = ctx.events.on('ai:fired', (event) => {
+      const field = this.heat[event.team];
+      if (field && event.origin) field.add(event.origin.x, event.origin.z, 0.35);
+    });
+    this.weaponOff = ctx.events.on('weapon:fired', (event) => {
+      if (event.origin) this.heat.alpha.add(event.origin.x, event.origin.z, 0.35);
+    });
     this.deathOff = ctx.events.on('actor:died', (event) => this.onActorDied(event));
     this.contactOff = ctx.events.on('combat:contact', (event) => this.onContact(event));
     await this.reset(ctx);
@@ -75,7 +103,7 @@ export class MatchSystem {
       shotsFired: 0, firstContactSeconds: null, contacts: 0,
       respawnToContactTotal: 0, respawnToContactSamples: 0,
       killsByZone: {}, killsByTeam: { alpha: 0, bravo: 0 },
-      stuckByZone: {}, stuckSamples: [], spawnDeathDetail: [],
+      stuckByZone: {}, stuckSamples: [], spawnDeathDetail: [], killSpots: [],
       lifetimes: [], killerDistances: [], pathAdvances: 0,
     };
     for (const team of this.teams.values()) team.score = 0;
@@ -93,6 +121,8 @@ export class MatchSystem {
       participant.spawnIndex = -1;
     }
     this.spawnPoints = this.world.getSpawnPoints();
+    this.heat?.alpha.reset();
+    this.heat?.bravo.reset();
   }
 
   // ------------------------------------------------------------------ phases
@@ -151,6 +181,8 @@ export class MatchSystem {
     }
     if (this.phase !== 'active') return;
     this.clock += step;
+    this.heat.alpha.decay(step);
+    this.heat.bravo.decay(step);
     for (const participant of this.participants) {
       if (participant.alive || participant.awaitingSpawn) continue;
       participant.respawnTimer -= step;
@@ -172,6 +204,8 @@ export class MatchSystem {
     victim.respawnTimer = this.respawnSeconds;
     victim.awaitingSpawn = false;
     victim.lastZone = event.position ? this.world.zoneAt(event.position.x, event.position.z, event.position.y ?? 0) : victim.lastZone;
+    // A death marks where the victim's side was caught out.
+    if (event.position && this.heat[victim.team]) this.heat[victim.team].add(event.position.x, event.position.z, 2.2);
     this.telemetry.deaths += 1;
     // Only a death shortly after a *respawn* is a spawn death. The opening
     // deployment happens at clock zero in a friendly staging yard, so counting
@@ -225,6 +259,12 @@ export class MatchSystem {
         this.telemetry.killsByTeam[killer.team] += 1;
         const zone = victim.lastZone;
         this.telemetry.killsByZone[zone] = (this.telemetry.killsByZone[zone] ?? 0) + 1;
+        // Kill locations, so a topology change can be checked for creating a kill
+        // box rather than spreading engagements.
+        const spot = event.position;
+        if (spot && this.telemetry.killSpots.length < 600) {
+          this.telemetry.killSpots.push([Number(spot.x.toFixed(1)), Number(spot.z.toFixed(1))]);
+        }
       }
     }
     victim.lastKiller = killer?.id ?? null;
@@ -284,6 +324,10 @@ export class MatchSystem {
 
   onContact(event) {
     if (this.phase !== 'active') return;
+    // A confirmed sighting marks where the *seen* actor was, on that actor's own
+    // team field. This is observed information, not a position lookup.
+    const seen = this.getActorStates().find((actor) => actor.id === event.targetId);
+    if (seen && this.heat[seen.team]) this.heat[seen.team].add(seen.x, seen.z, 0.7);
     this.telemetry.contacts += 1;
     if (this.telemetry.firstContactSeconds == null) this.telemetry.firstContactSeconds = this.clock;
     const participant = this.byId.get(event.actorId);
@@ -303,6 +347,12 @@ export class MatchSystem {
   // bare counter only says something is wrong somewhere.
   // Stuck count alone is meaningless without knowing how much pathing happened.
   reportPathAdvance() { this.telemetry.pathAdvances += 1; }
+
+  // Expected enemy presence near a position, 0..1, decayed and observation-fed.
+  // Expected presence of `team` near a position: 0..1, decayed, fed only by
+  // observed gunfire, deaths and sightings of that team.
+  contactPressure(team, x, z, radius = 20) { return this.heat[team]?.around(x, z, radius) ?? 0; }
+  heatHotspots(team, limit) { return this.heat[team]?.hotspots(limit) ?? []; }
 
   reportStuckRecovery(position = null) {
     this.telemetry.stuckRecoveries += 1;
@@ -366,6 +416,38 @@ export class MatchSystem {
     return score;
   }
 
+  // Picks a facing that both looks into the map and looks toward the fight.
+  // Candidates are scored on measured forward clearance first (a wall in the face
+  // is the worst outcome) and then on bearing to the nearest live enemy.
+  chooseSpawnYaw(point, enemies, physics) {
+    let nearest = null; let nearestDistance = Infinity;
+    for (const enemy of enemies) {
+      const distance = Math.hypot(enemy.x - point.x, enemy.z - point.z);
+      if (distance < nearestDistance) { nearestDistance = distance; nearest = enemy; }
+    }
+    const preferred = nearest
+      ? Math.atan2(-(nearest.x - point.x), -(nearest.z - point.z))
+      : Math.atan2(-(0 - point.x), -(0 - point.z));
+    let bestYaw = preferred; let bestScore = -Infinity;
+    this.yawOrigin ??= { x: 0, y: 0, z: 0 };
+    this.yawDirection ??= { x: 0, y: 0, z: 0 };
+    for (let i = 0; i < SPAWN_YAW_CANDIDATES; i += 1) {
+      const yaw = preferred + (i / SPAWN_YAW_CANDIDATES) * Math.PI * 2;
+      let clearance = SPAWN_CLEARANCE_TARGET;
+      if (physics) {
+        this.yawOrigin.x = point.x; this.yawOrigin.y = (point.y ?? 0) + 1.6; this.yawOrigin.z = point.z;
+        this.yawDirection.x = -Math.sin(yaw); this.yawDirection.y = 0; this.yawDirection.z = -Math.cos(yaw);
+        const hit = physics.raycastWorldDistance(this.yawOrigin, this.yawDirection, SPAWN_CLEARANCE_TARGET);
+        clearance = hit == null ? SPAWN_CLEARANCE_TARGET : hit;
+      }
+      // Clearance dominates until it is comfortable, then bearing decides.
+      const bearingPenalty = Math.abs(((yaw - preferred + Math.PI * 3) % (Math.PI * 2)) - Math.PI);
+      const score = Math.min(clearance, SPAWN_CLEARANCE_TARGET) * 4 - bearingPenalty * 6;
+      if (score > bestScore) { bestScore = score; bestYaw = yaw; }
+    }
+    return bestYaw;
+  }
+
   selectSpawn(participant) {
     const candidates = this.spawnPoints.filter((point) => point.team === participant.team);
     if (!candidates.length) return { x: 0, y: 0, z: participant.team === 'alpha' ? 30 : -50, yaw: 0 };
@@ -378,6 +460,11 @@ export class MatchSystem {
       const score = this.scoreSpawn(candidates[i], i, participant, enemies, allies, physics);
       if (score > bestScore) { bestScore = score; best = { point: candidates[i], index: i }; }
     }
+    // Facing was never part of spawn selection: yaw was a per-team constant baked
+    // into the spawn point, and it pointed at the map boundary. Measured forward
+    // clearance was under 15 m for every Bravo spawn (median 5.8 m), so a bot or
+    // player re-entered the match nose-to-wall with the map behind them.
+    best.point = { ...best.point, yaw: this.chooseSpawnYaw(best.point, enemies, physics) };
     participant.spawnIndex = best.index;
     this.recentSpawnIndices.unshift(best.index);
     if (this.recentSpawnIndices.length > 6) this.recentSpawnIndices.length = 6;
@@ -491,7 +578,13 @@ export class MatchSystem {
         averageRespawnToContactSeconds: telemetry.respawnToContactSamples
           ? Number((telemetry.respawnToContactTotal / telemetry.respawnToContactSamples).toFixed(2))
           : null,
+        // Per participant, because pooled totals hid one actor taking 59% of a
+        // team's score across nine passes of otherwise honest measurement.
+        participantKills: this.participants.map((p) => ({
+          id: p.id, team: p.team, human: p.id === 'player', kills: p.kills, deaths: p.deaths,
+        })),
         killsByZone: { ...telemetry.killsByZone },
+        killSpots: telemetry.killSpots.slice(),
         lifetimeSeconds: MatchSystem.describe(telemetry.lifetimes),
         killerDistanceM: MatchSystem.describe(telemetry.killerDistances),
         pathAdvances: telemetry.pathAdvances,
@@ -529,5 +622,5 @@ export class MatchSystem {
     };
   }
 
-  dispose() { this.deathOff?.(); this.contactOff?.(); }
+  dispose() { this.deathOff?.(); this.contactOff?.(); this.shotOff?.(); this.weaponOff?.(); }
 }

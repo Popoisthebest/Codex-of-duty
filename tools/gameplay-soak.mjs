@@ -66,6 +66,20 @@ await withDevServer(async () => {
     runtimeErrors: runs.reduce((total, run) => total + run.runtimeErrors, 0),
     nonFinite: runs.some((run) => run.nonFiniteState),
     kills: num(runs.map((run) => run.kills)),
+    // Human-driver metrics are reported separately from the twelve-actor
+    // aggregates: they describe one scripted player, not the simulation.
+    humanKills: num(runs.map((run) => run.human?.kills)),
+    humanDeaths: num(runs.map((run) => run.human?.deaths)),
+    humanZonesVisited: num(runs.map((run) => run.human?.zonesVisitedCount)),
+    humanDistanceM: num(runs.map((run) => run.human?.distanceTravelledM)),
+    humanCombatTimePct: num(runs.map((run) => run.human?.combatTimePct)),
+    humanTravelTimePct: num(runs.map((run) => run.human?.travelTimePct)),
+    humanDeadTimePct: num(runs.map((run) => run.human?.deadTimePct)),
+    humanElevatedTimePct: num(runs.map((run) => run.human?.elevatedTimePct)),
+    humanFirstContactSeconds: num(runs.map((run) => run.human?.firstContactSeconds)),
+    humanRespawnToContactP50: num(runs.map((run) => run.human?.respawnToContactSeconds?.p50)),
+    humanNoContactGapP90: num(runs.map((run) => run.human?.noContactGapSeconds?.p90)),
+    humanBlockedRecoveries: num(runs.map((run) => run.human?.blockedRecoveries)),
     deaths: num(runs.map((run) => run.deaths)),
     respawns: num(runs.map((run) => run.respawns)),
     // Spawn deaths are the headline safety metric, so it is reported as a rate.

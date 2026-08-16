@@ -1,3 +1,5 @@
+import { PlayerDriver } from './player-driver.js';
+
 // Deterministic gameplay scenarios for the v3 harness.
 //
 // Truthfulness rule: these runners may seed RNG, fix the timestep, inject
@@ -123,51 +125,9 @@ class EvidenceRecorder {
   dispose() { for (const off of this.offs) off(); }
 }
 
-// Drives the human slot deterministically. This must behave like a plausible
-// player, not an aimbot: an earlier version snapped perfectly onto any visible
-// opponent at unlimited range and fired instantly, which made the scripted human
-// responsible for *every* spawn death in the soak and made spawn placement look
-// broken when it was not. It now has a limited engagement range, a reaction
-// delay before it opens up, and residual aim error.
-const DRIVER_ENGAGE_RANGE = 34;
-const DRIVER_REACTION_FRAMES = 16;
-
-function drivePlayer(engine, frame, state) {
-  const ctx = engine.ctx;
-  const player = ctx.get('player');
-  const weapon = ctx.get('weapons');
-  const input = ctx.input;
-  if (player.dead) {
-    input.clearVirtual();
-    state.acquiredFor = 0;
-    return;
-  }
-  if (weapon.ammo === 0 && !weapon.reloading) {
-    input.setVirtual('fire', false);
-    input.setVirtual('reload', frame % 2 === 0);
-    return;
-  }
-  input.setVirtual('reload', false);
-  const aim = ctx.get('ai').getAimPoint(DRIVER_ENGAGE_RANGE);
-  if (!aim) {
-    state.acquiredFor = 0;
-    input.setVirtual('fire', false);
-    input.setVirtual('ads', false);
-    input.setVirtual('forward', true);
-    input.setVirtual('sprint', true);
-    return;
-  }
-  input.setVirtual('forward', false);
-  input.setVirtual('sprint', false);
-  state.acquiredFor += 1;
-  // Deterministic residual aim error so the driver does not headshot everything
-  // it can see the instant it sees it.
-  const wobble = state.rng.range(-0.55, 0.55);
-  player.aimAtPoint({ x: aim.x + wobble, y: aim.y + state.rng.range(-0.3, 0.3), z: aim.z + wobble });
-  input.setVirtual('ads', true);
-  input.setVirtual('fire', state.acquiredFor > DRIVER_REACTION_FRAMES);
-}
-
+// The scripted human lives in src/core/player-driver.js. It plays through the
+// production input path (virtual movement actions plus injectLook for turning)
+// and is deliberately not omniscient.
 async function runTdmCore(engine, options = {}) {
   const seed = Number(options.seed ?? 1337);
   const scoreLimit = Math.max(4, Math.floor(Number(options.scoreLimit ?? 12)));
@@ -183,7 +143,7 @@ async function runTdmCore(engine, options = {}) {
   const restoreRules = match.configureRules({ scoreLimit, timeLimitSeconds: 600, respawnSeconds: 1.6 });
 
   const recorder = new EvidenceRecorder(ctx);
-  const driverState = { acquiredFor: 0, rng: ctx.rng.fork('driver') };
+  const driver = new PlayerDriver(engine, ctx.rng.fork('driver'));
   const errors = [];
   const phaseBefore = match.phase;
   const participantsBefore = match.getReport().participants;
@@ -198,7 +158,7 @@ async function runTdmCore(engine, options = {}) {
     const maxFrames = Math.ceil(maxSeconds / FIXED);
     framesRun = engine.simulateFrames(maxFrames, 15, (index) => {
       recorder.pollScores(match);
-      drivePlayer(engine, index, driverState);
+      driver.update(FIXED);
       return match.phase !== 'ended';
     });
   } catch (error) {
@@ -265,6 +225,7 @@ async function runTdmCore(engine, options = {}) {
     errors,
     nonFiniteFields: [...new Set([...nonFiniteDuring, ...nonFiniteAfter])],
     evidence,
+    human: { ...driver.report(), kills: match.getParticipant('player')?.kills ?? 0, deaths: match.getParticipant('player')?.deaths ?? 0 },
   };
   result.ok = result.matchStarted && result.participantsReady && result.scoreChangedFromKill
     && result.deathObserved && result.respawnObserved && result.scoreboardConsistent
@@ -286,7 +247,7 @@ async function runCombatSoak(engine, options = {}) {
   // A soak must not end early, so the score limit is raised out of the way.
   const restoreRules = match.configureRules({ scoreLimit: 100000, timeLimitSeconds: simulatedSeconds * 4, respawnSeconds: 3 });
   const recorder = new EvidenceRecorder(ctx);
-  const driverState = { acquiredFor: 0, rng: ctx.rng.fork('driver') };
+  const driver = new PlayerDriver(engine, ctx.rng.fork('driver'));
   const errors = [];
 
   let maxStuckSeconds = 0;
@@ -303,7 +264,7 @@ async function runCombatSoak(engine, options = {}) {
   let framesRun = 0;
   try {
     framesRun = engine.simulateFrames(Math.ceil(simulatedSeconds / FIXED), 15, (index) => {
-      drivePlayer(engine, index, driverState);
+      driver.update(FIXED);
       for (const bot of ai.bots) if (bot.stuckTimer > maxStuckSeconds) maxStuckSeconds = bot.stuckTimer;
       if (index % 120 === 0) {
         for (const bot of ai.bots) {
@@ -356,7 +317,10 @@ async function runCombatSoak(engine, options = {}) {
     firstContactSeconds: report.telemetry.firstContactSeconds,
     averageRespawnToContactSeconds: report.telemetry.averageRespawnToContactSeconds,
     killsByZone: report.telemetry.killsByZone,
+    participantKills: report.telemetry.participantKills,
+    killSpots: report.telemetry.killSpots,
     killsByTeam: report.telemetry.killsByTeam,
+    goalReport: ai.goalReport(),
     stuckByZone: report.telemetry.stuckByZone,
     lifetimeSeconds: report.telemetry.lifetimeSeconds,
     killerDistanceM: report.telemetry.killerDistanceM,
@@ -376,6 +340,14 @@ async function runCombatSoak(engine, options = {}) {
     goalNodeLow: goalLow,
     playerDeaths: recorder.playerDeaths,
     playerRespawns: recorder.playerRespawns,
+    // Human-driver metrics are kept separate from the bot-vs-bot aggregates
+    // above: they describe one scripted player, not the twelve-actor simulation.
+    human: {
+      ...driver.report(),
+      kills: match.getParticipant('player')?.kills ?? 0,
+      deaths: match.getParticipant('player')?.deaths ?? 0,
+      score: match.getParticipant('player')?.score ?? 0,
+    },
     nonFiniteState: nonFinite.length > 0,
     nonFiniteFields: nonFinite,
     runtimeErrors: errors.length,

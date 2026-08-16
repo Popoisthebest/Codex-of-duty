@@ -62,6 +62,9 @@ const ENGAGE_RANGE = 22;
 const PATH_ARRIVE = 1.1;
 const PATH_ARRIVE_STAIR = 0.42;
 const STUCK_SECONDS = 1.2;
+// Goal selection samples this many candidates and keeps the best value/cost.
+const GOAL_SAMPLES = 14;
+const GOAL_DISTANCE_SCALE = 16;
 
 // Small binary heap so A* over a few thousand nav nodes stays cheap enough to
 // run every time a bot repaths.
@@ -117,6 +120,7 @@ export class AISystem {
     this.liveRadii = [];
     this.liveOwners = [];
     this.heap = new MinHeap();
+    this.goalTrace = [];
     this.scratchVec = new THREE.Vector3();
     this.eye = new THREE.Vector3();
     this.target = new THREE.Vector3();
@@ -303,7 +307,12 @@ export class AISystem {
     this.rng = ctx.rng.fork('ai');
     this.harnessFreeze = false;
     this.legacyStaging = false;
+    this.goalTrace = [];
+    this.elevatedFrames = 0;
+    this.elevatedCombatFrames = 0;
+    this.totalActiveFrames = 0;
     for (const bot of this.bots) {
+      bot.goalMeta = null;
       bot.health = 100;
       bot.alive = true;
       bot.participating = true;
@@ -329,6 +338,8 @@ export class AISystem {
       bot.root.rotation.set(0, 0, 0);
       bot.root.scale.set(1, 1, 1);
       for (const leg of bot.limbs.legs) leg.rotation.x = 0;
+    bot.root.rotation.x = 0; bot.speed = 0; bot.gaitPhase = bot.phase;
+      bot.root.rotation.x = 0; bot.speed = 0; bot.gaitPhase = bot.phase;
     }
     this.deployAll();
   }
@@ -354,6 +365,7 @@ export class AISystem {
   }
 
   placeBot(bot, spawn) {
+    if (bot.goalMeta) this.endGoal(bot, 'died');
     this.setHittable(bot, true);
     bot.stationary = false;
     bot.root.position.set(spawn.x, spawn.y ?? 0, spawn.z);
@@ -374,6 +386,7 @@ export class AISystem {
     bot.inCover = false;
     bot.lastSeen.copy(bot.root.position);
     for (const leg of bot.limbs.legs) leg.rotation.x = 0;
+    bot.root.rotation.x = 0; bot.speed = 0; bot.gaitPhase = bot.phase;
   }
 
   onRespawn(event) {
@@ -553,23 +566,73 @@ export class AISystem {
       bot.lane = swap;
       zone = LANES[bot.team][swap][bot.laneStep % LANES[bot.team][swap].length];
     }
-    const candidates = world.getZoneNodes(zone);
-    if (!candidates.length) {
+    // Offer both the lane objective and the bot's current surroundings. Picking
+    // the zone first and only then scoring inside it meant every candidate was as
+    // far away as that zone happened to be, so a nearby rooftop two streets over
+    // never competed with a distant one. The lane still biases where a team
+    // pushes; it no longer hides local options from the utility model.
+    const laneNodes = world.getZoneNodes(zone);
+    const localZone = world.zoneAt(bot.root.position.x, bot.root.position.z, bot.root.position.y);
+    const localNodes = localZone === zone ? [] : world.getZoneNodes(localZone);
+    if (!laneNodes.length && !localNodes.length) {
       bot.laneStep += 1;
       return -1;
     }
     bot.goalZone = zone;
-    // Prefer high ground. Catwalks, terraces, the overpass and the upper floors
-    // all overlook contested space, so a bot heading for one is making a normal
-    // tactical choice. Picking uniformly instead meant elevation lost by sheer
-    // node count (east-terrace has 368 nodes and only 62 of them are elevated),
-    // so no bot ever used a firing position above ground level.
-    const bias = INDOOR_ZONES.has(zone) ? 0.72 : 0.45;
-    if (this.rng.next() < bias) {
-      const elevated = candidates.filter((id) => this.nav[id].y > 2);
-      if (elevated.length) return elevated[Math.floor(this.rng.next() * elevated.length)];
+    // Utility, not a coin flip. Goals used to be drawn uniformly from a zone and
+    // separately biased toward height, which produced elevated objectives an
+    // average of ~50 m away down 30-40 waypoint routes. Instrumentation showed
+    // *not one* of those was ever reached: bots died or got stuck partway, every
+    // time, because the trip outlasted a median 28 s life.
+    //
+    // A position is now worth what it overlooks, discounted by what it costs to
+    // reach. Elevation wins when it is close enough to be worth the climb, which
+    // is the same judgement a player makes.
+    let best = -1;
+    let bestScore = -Infinity;
+    for (let i = 0; i < GOAL_SAMPLES; i += 1) {
+      // Two thirds lane objective, one third local. The lane keeps pulling bots
+      // into contact; the local third lets a position within reach win on merit.
+      // Measured: 1-in-4 local with a softer distance term was worse on both
+      // counts (kills 14, elevated time 2.1%) because the model became myopic.
+      const pool = (i % 3 === 2 && localNodes.length) ? localNodes : (laneNodes.length ? laneNodes : localNodes);
+      const id = pool[Math.floor(this.rng.next() * pool.length)];
+      const node = this.nav[id];
+      const distance = Math.hypot(node.x - bot.root.position.x, node.z - bot.root.position.z);
+      const climb = Math.max(0, node.y - bot.groundY);
+      // Value: what the position can see, plus a modest premium for high ground.
+      //
+      // An expected-enemy-presence term was tried here and measured WORSE on
+      // every axis that matters (see docs/GAMEPLAY_STATUS.md pass 8): bot kills
+      // 27 -> 13, human combat time 19% -> 5%, Gate D no-contact p90 18.7 s ->
+      // 43.3 s. Recent-contact heat is a lagging signal, and because a bot heats
+      // the cells it just fought in, feeding it back into a value/cost score with
+      // a distance denominator made goals even more local (elevated objectives
+      // fell to ~10 m away). The heat field itself is retained and instrumented
+      // in MatchSystem, but it does not drive goal choice.
+      const overlook = node.overlook ?? 0;
+      const value = 1 + overlook * 2.2 + (node.y > 2 ? 0.55 : 0);
+      // Cost: distance dominates, and a climb costs more than flat ground
+      // because stairs are slow and expose the climber.
+      const cost = 1 + distance / GOAL_DISTANCE_SCALE + climb * 0.22;
+      const score = value / cost + this.rng.range(0, 0.12);
+      if (score > bestScore) { bestScore = score; best = id; }
+      if (best >= 0 && this.nav[best].zone) bot.goalZone = this.nav[best].zone;
     }
-    return candidates[Math.floor(this.rng.next() * candidates.length)];
+    return best;
+  }
+
+  // Records why a tactical goal ended. Without this the only observable is
+  // "elevation is unused", which cannot distinguish "never chosen" from "chosen
+  // and never reached".
+  endGoal(bot, reason) {
+    if (!bot.goalMeta) return;
+    const meta = bot.goalMeta;
+    meta.reason = reason;
+    meta.seconds = Number((this.ctx.time.elapsed - meta.startedAt).toFixed(1));
+    this.goalTrace.push(meta);
+    if (this.goalTrace.length > 4000) this.goalTrace.shift();
+    bot.goalMeta = null;
   }
 
   repath(bot, force = false) {
@@ -578,7 +641,18 @@ export class AISystem {
     bot.repathTimer = 1.1 + this.rng.range(0, 0.9);
     const from = world.nearestNavNode(bot.root.position.x, bot.root.position.y, bot.root.position.z);
     if (from < 0) return;
-    if (bot.goalNode < 0) bot.goalNode = this.chooseGoal(bot);
+    if (bot.goalNode < 0) {
+      bot.goalNode = this.chooseGoal(bot);
+      if (bot.goalNode >= 0) {
+        const node = this.nav[bot.goalNode];
+        bot.goalMeta = {
+          bot: bot.id, zone: bot.goalZone, elevated: node.y > 2, goalY: Number(node.y.toFixed(1)),
+          startedAt: this.ctx.time.elapsed, fromY: Number(bot.groundY.toFixed(1)),
+          straight: Number(Math.hypot(node.x - bot.root.position.x, node.z - bot.root.position.z).toFixed(1)),
+          pathNodes: 0, stairNodes: 0, reason: null, seconds: 0, progressed: 0,
+        };
+      }
+    }
     if (bot.goalNode < 0) return;
     if (!this.findPath(from, bot.goalNode, bot.path)) {
       // The goal is unreachable from here; take the next lane objective instead.
@@ -587,10 +661,16 @@ export class AISystem {
       if (bot.goalNode >= 0) this.findPath(from, bot.goalNode, bot.path);
     }
     bot.pathIndex = bot.path.length > 1 ? 1 : 0;
+    if (bot.goalMeta && bot.path.length) {
+      bot.goalMeta.pathNodes = bot.path.length;
+      bot.goalMeta.stairNodes = bot.path.reduce((total, id) => total + (this.nav[id].stair ? 1 : 0), 0);
+      bot.goalMeta.climb = Number(Math.max(0, this.nav[bot.goalNode].y - bot.groundY).toFixed(1));
+    }
   }
 
   followPath(bot, step, speed) {
     if (bot.pathIndex >= bot.path.length) {
+      this.endGoal(bot, 'arrived');
       bot.laneStep += 1;
       bot.goalNode = -1;
       this.repath(bot, true);
@@ -608,6 +688,7 @@ export class AISystem {
     const heightTolerance = node.stair ? 0.5 : 1.2;
     if (distance < arrive && Math.abs(node.y - bot.groundY) < heightTolerance) {
       bot.pathIndex += 1;
+      if (bot.goalMeta) bot.goalMeta.progressed += 1;
       this.ctx.peek('match')?.reportPathAdvance();
       return true;
     }
@@ -724,11 +805,19 @@ export class AISystem {
 
   // ---------------------------------------------------------------- combat
 
-  // Tuning intent: one bot firing at a target needs several seconds of sustained
+  // Tuning intent: one bot firing at a target needs a few seconds of sustained
   // contact to kill it, so a fight is a decision rather than an instant loss,
   // while two or three bots working together are genuinely lethal.
+  //
+  // The previous numbers - 46% to-hit cap for 8-12 damage - meant ~4.9 expected
+  // damage per shot against a player dealing 34, a ~20x lethality gap. Measured
+  // effect: a bot needed 12.5 s of unbroken line of sight to kill a stationary
+  // player, so bot-vs-bot fights almost never resolved and the human scored 59%
+  // of their team's points. Eleven of twelve combatants were props. These
+  // numbers close the gap to roughly 3x, which still leaves the player clearly
+  // the strongest actor on the field.
   fireAt(bot, targetPosition, distance, ctx) {
-    const accuracy = THREE.MathUtils.clamp(0.6 - distance * 0.012, 0.15, 0.46);
+    const accuracy = THREE.MathUtils.clamp(0.68 - distance * 0.011, 0.18, 0.54);
     const hit = this.rng.next() < accuracy;
     this.target.set(targetPosition.x, targetPosition.y + targetPosition.eye, targetPosition.z);
     const end = this.target.clone();
@@ -748,7 +837,7 @@ export class AISystem {
     if (!hit) return;
     const damageScale = ctx.harness.scenario === 'profile' ? 0.24 : 1;
     const hitZone = this.rng.next() < 0.1 ? 'head' : 'torso';
-    const base = this.rng.range(8, 12) * (hitZone === 'head' ? 1.7 : 1) * damageScale;
+    const base = this.rng.range(16, 21) * (hitZone === 'head' ? 1.7 : 1) * damageScale;
     ctx.events.emit('combat:damage', {
       targetType: bot.targetId === 'player' ? 'player' : 'enemy',
       targetId: bot.targetId,
@@ -846,6 +935,11 @@ export class AISystem {
       bot.coverTimer = Math.max(0, bot.coverTimer - step);
       bot.coverHoldTimer = Math.max(0, bot.coverHoldTimer - step);
       if (frame % PERCEPTION_STRIDE === bot.index % PERCEPTION_STRIDE) this.updatePerception(bot);
+      if (bot.root.position.y > 2) {
+        this.elevatedFrames += 1;
+        if (bot.hasLos) this.elevatedCombatFrames += 1;
+      }
+      this.totalActiveFrames += 1;
       if (!this.hasLiveOpponent(bot)) { bot.state = 'hold'; bot.hasLos = false; this.animateBot(bot, ctx); continue; }
       if (match && match.phase === 'prematch') { bot.state = 'ready'; this.animateBot(bot, ctx); continue; }
       if (match && match.phase === 'ended') { bot.state = 'standdown'; this.animateBot(bot, ctx); continue; }
@@ -905,7 +999,7 @@ export class AISystem {
       if (bot.fireCooldown <= 0 && distance < FIRE_RANGE) {
         if (bot.burst <= 0) { bot.burst = 3 + Math.floor(this.rng.next() * 3); }
         bot.burst -= 1;
-        bot.fireCooldown = bot.burst > 0 ? 0.12 : 0.75 + this.rng.range(0.2, 0.85);
+        bot.fireCooldown = bot.burst > 0 ? 0.12 : 0.55 + this.rng.range(0.15, 0.6);
         this.fireAt(bot, target, distance, ctx);
       }
       return;
@@ -946,6 +1040,7 @@ export class AISystem {
     bot.stuckTimer += step;
     if (bot.stuckTimer < STUCK_SECONDS) return;
     bot.stuckTimer = 0;
+    this.endGoal(bot, 'stuck');
     bot.hasCover = false; bot.inCover = false; bot.approachingCover = false;
     bot.laneStep += 1;
     bot.goalNode = -1;
@@ -965,13 +1060,33 @@ export class AISystem {
   }
 
   animateBot(bot, ctx) {
-    const moving = bot.state === 'advance' || bot.state === 'reposition' || bot.state === 'search' || bot.state === 'engage';
-    const stride = moving ? Math.sin(ctx.time.elapsed * 6 + bot.phase) * 0.42 : 0;
+    const step = ctx.time.fixed;
+    // Gait is driven by measured ground speed rather than the AI state, so feet
+    // stop sliding and a bot holding an angle in a firefight no longer walks on
+    // the spot the way a state flag made it.
+    const dx = bot.root.position.x - (bot.animX ?? bot.root.position.x);
+    const dz = bot.root.position.z - (bot.animZ ?? bot.root.position.z);
+    bot.animX = bot.root.position.x; bot.animZ = bot.root.position.z;
+    const instant = step > 0 ? Math.hypot(dx, dz) / step : 0;
+    // A respawn or an unstick teleport is not locomotion.
+    bot.speed = THREE.MathUtils.damp(bot.speed ?? 0, instant > 12 ? 0 : instant, 9, step);
+    const gait = THREE.MathUtils.clamp(bot.speed / 4.2, 0, 1.3);
+    // Phase advances with distance covered, which is what keeps the contact rate
+    // matched to the ground instead of to wall-clock time.
+    bot.gaitPhase = (bot.gaitPhase ?? bot.phase) + bot.speed * 1.45 * step;
+    const swing = Math.sin(bot.gaitPhase);
+    const stride = swing * (0.1 + gait * 0.36);
     bot.limbs.legs[0].rotation.x = stride;
     bot.limbs.legs[1].rotation.x = -stride;
-    bot.limbs.rifle.position.y = 1.2 + Math.sin(ctx.time.elapsed * 5 + bot.phase) * 0.015;
-    if (bot.alive) bot.root.position.y = bot.groundY + (moving ? Math.abs(Math.sin(ctx.time.elapsed * 6 + bot.phase)) * 0.025 : 0);
-    bot.root.scale.y = THREE.MathUtils.damp(bot.root.scale.y, bot.inCover ? 0.86 : 1, 12, ctx.time.fixed);
+    // The rifle rides against the leading leg, over a slow breathing idle.
+    bot.limbs.rifle.rotation.z = -swing * gait * 0.07;
+    bot.limbs.rifle.position.y = 1.2 - Math.abs(swing) * gait * 0.028
+      + Math.sin(ctx.time.elapsed * 1.7 + bot.phase) * 0.012;
+    // Weight drops at each footfall - twice per stride, not once.
+    if (bot.alive) bot.root.position.y = bot.groundY + Math.abs(Math.cos(bot.gaitPhase)) * gait * 0.042;
+    // Lean into the run so a sprinting silhouette reads differently from a walker.
+    bot.root.rotation.x = THREE.MathUtils.damp(bot.root.rotation.x, gait * 0.075, 8, step);
+    bot.root.scale.y = THREE.MathUtils.damp(bot.root.scale.y, bot.inCover ? 0.86 : 1, 12, step);
   }
 
   separate(ctx) {
@@ -1042,6 +1157,41 @@ export class AISystem {
       position: bot.root.position.toArray(),
       coverTarget: bot.hasCover || bot.inCover ? bot.coverTarget.toArray() : null,
     }));
+  }
+
+  // Aggregated goal-lifecycle evidence: was elevation chosen, routed to, reached,
+  // and if not, what ended the attempt.
+  goalReport() {
+    const buckets = { elevated: {}, ground: {} };
+    const add = (key, reason, meta) => {
+      const bucket = buckets[key];
+      bucket[reason] ??= { count: 0, seconds: 0, pathNodes: 0, straight: 0, progressed: 0, climb: 0 };
+      const entry = bucket[reason];
+      entry.count += 1;
+      entry.seconds += meta.seconds;
+      entry.pathNodes += meta.pathNodes;
+      entry.straight += meta.straight;
+      entry.progressed += meta.progressed;
+      entry.climb += meta.climb ?? 0;
+    };
+    for (const meta of this.goalTrace) add(meta.elevated ? 'elevated' : 'ground', meta.reason ?? 'open', meta);
+    const finish = (bucket) => Object.fromEntries(Object.entries(bucket).map(([reason, e]) => [reason, {
+      count: e.count,
+      meanSeconds: Number((e.seconds / e.count).toFixed(1)),
+      meanPathNodes: Number((e.pathNodes / e.count).toFixed(1)),
+      meanStraightM: Number((e.straight / e.count).toFixed(1)),
+      meanProgressed: Number((e.progressed / e.count).toFixed(1)),
+      meanClimbM: Number((e.climb / e.count).toFixed(1)),
+    }]));
+    const total = this.goalTrace.length || 1;
+    return {
+      goals: this.goalTrace.length,
+      elevatedGoalSharePct: Number((this.goalTrace.filter((m) => m.elevated).length * 100 / total).toFixed(1)),
+      elevated: finish(buckets.elevated),
+      ground: finish(buckets.ground),
+      elevatedTimePct: Number((this.elevatedFrames * 100 / Math.max(1, this.totalActiveFrames)).toFixed(2)),
+      elevatedCombatTimePct: Number((this.elevatedCombatFrames * 100 / Math.max(1, this.totalActiveFrames)).toFixed(2)),
+    };
   }
 
   teamSnapshot() {

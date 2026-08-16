@@ -41,12 +41,12 @@ export class UISystem {
       <div class="hud-scanlines" aria-hidden="true"></div>
       <section class="hud-match" aria-label="Match state">
         <div class="hud-team is-alpha"><span>ALPHA</span><b id="score-alpha">0</b></div>
-        <div class="hud-clock"><b id="match-clock">10:00</b><i id="match-mode">TEAM DEATHMATCH · 100</i></div>
+        <div class="hud-clock"><b id="match-clock">10:00</b><i id="match-mode">TEAM DEATHMATCH</i></div>
         <div class="hud-team is-bravo"><b id="score-bravo">0</b><span>BRAVO</span></div>
       </section>
       <section class="hud-objective" aria-label="Current objective">
         <div class="hud-kicker"><span class="hud-pulse"></span> OPERATION NIGHTGLASS</div>
-        <div class="hud-objective-title" id="objective-title">ELIMINATE BRAVO · FIRST TO 100</div>
+        <div class="hud-objective-title" id="objective-title">ELIMINATE BRAVO</div>
         <div class="hud-objective-meta"><span id="zone-label">SABLE MARKET</span><b id="enemy-count">6 HOSTILES</b></div>
       </section>
       <div class="hud-compass" aria-label="Compass"><span>W</span><i></i><span>NW</span><i></i><strong id="bearing">N&nbsp;&nbsp;000</strong><i></i><span>NE</span><i></i><span>E</span></div>
@@ -81,7 +81,7 @@ export class UISystem {
         <div class="briefing-card">
           <div class="briefing-eyebrow">TEAM DEATHMATCH // 6v6 // 04:17 LOCAL</div>
           <h1>NIGHTGLASS</h1>
-          <p>You lead Alpha into the Sable district. Six of you against six of Bravo. First team to 100 eliminations wins; the clock ends it at ten minutes.</p>
+          <p id="briefing-rules">You lead Alpha into the Sable district. Six of you against six of Bravo.</p>
           <div class="briefing-grid"><span><b>WASD</b> MOVE</span><span><b>MOUSE</b> AIM</span><span><b>LMB</b> FIRE</span><span><b>RMB</b> ADS</span><span><b>R</b> RELOAD</span><span><b>TAB</b> SCORES</span></div>
           <button id="deploy-button" type="button"><i></i> DEPLOY</button>
           <small>ESC releases mouse control</small>
@@ -107,8 +107,18 @@ export class UISystem {
       prematchValue: this.root.querySelector('#prematch-value'), end: this.root.querySelector('#match-end'),
       endResult: this.root.querySelector('#end-result'), endScore: this.root.querySelector('#end-score'),
       endReason: this.root.querySelector('#end-reason'), endBoard: this.root.querySelector('#end-board'),
+      mode: this.root.querySelector('#match-mode'), objective: this.root.querySelector('#objective-title'), briefingRules: this.root.querySelector('#briefing-rules'),
       scoreboard: this.root.querySelector('#scoreboard'), boardWrap: this.root.querySelector('#board-wrap'),
     };
+    // Every statement of the win condition is rendered from the authoritative
+    // ruleset. These used to be hardcoded to 100 while the match ran a different
+    // limit, which is how the HUD ended up promising a target the match could
+    // not reach.
+    const limit = ctx.get('match').scoreLimit;
+    const minutes = Math.round(ctx.get('match').timeLimitSeconds / 60);
+    this.els.mode.textContent = `TEAM DEATHMATCH · ${limit}`;
+    this.els.objective.textContent = `ELIMINATE BRAVO · FIRST TO ${limit}`;
+    this.els.briefingRules.textContent = `You lead Alpha into the Sable district. Six of you against six of Bravo. First team to ${limit} eliminations wins; the clock ends it at ${minutes} minutes.`;
     if (ctx.harness.active) this.els.briefing.hidden = true;
     this.onDeploy = () => {
       const request = ctx.canvas.requestPointerLock?.();
@@ -187,7 +197,7 @@ export class UISystem {
       .hud-ammo{position:absolute;right:34px;bottom:30px;text-align:right}.hud-weapon{font-weight:800;font-size:13px}.hud-weapon span{font-size:9px;color:#7d969b;margin-left:8px}.hud-ammo-row{display:flex;justify-content:flex-end;align-items:end;gap:10px;margin-top:3px}.hud-ammo-row b{font:800 44px/.9 ui-monospace,monospace}.hud-ammo-row i{width:1px;height:29px;background:#688087}.hud-ammo-row span{font:16px/1 ui-monospace,monospace;color:#9aadb0}.hud-firemode{margin-top:8px}.hud-firemode span{color:var(--cyan)}.hud-reload-track{height:2px;width:100%;margin-top:6px;background:rgba(131,230,228,.16);opacity:0}.hud-reload-track.is-visible{opacity:1}.hud-reload-track i{display:block;height:100%;width:0;background:var(--amber);box-shadow:0 0 7px var(--amber)}.hud-controls{position:absolute;bottom:13px;left:50%;transform:translateX(-50%);font-size:9px;color:#779095}
       .hud-countdown[hidden],.hud-death[hidden],.hud-end[hidden],.hud-scoreboard[hidden]{display:none}.hud-countdown{position:absolute;inset:0;display:grid;place-items:center;text-align:center}.hud-countdown b{display:block;font:800 96px/1 ui-monospace,monospace;color:var(--cyan);text-shadow:0 0 40px rgba(131,230,228,.5)}.hud-countdown span{font-size:11px;letter-spacing:.32em;color:#9fb6b9}
       .hud-death{position:absolute;inset:0;display:grid;place-items:center;background:radial-gradient(circle,rgba(38,8,5,.2),rgba(3,4,5,.72));text-align:center}.hud-death span{display:block;color:var(--danger);font-size:11px;letter-spacing:.2em}.hud-death b{display:block;font-size:30px;margin:10px 0 6px;letter-spacing:.12em}.hud-death em{display:block;font:800 54px/1 ui-monospace,monospace;font-style:normal;color:var(--amber)}
-      .hud-end{position:absolute;inset:0;display:grid;place-items:center;pointer-events:auto;background:radial-gradient(circle at 50% 40%,rgba(10,26,31,.72),rgba(2,5,7,.95))}.end-card{width:min(560px,calc(100vw - 32px));padding:36px;border:1px solid rgba(134,209,210,.28);border-left:3px solid var(--cyan);background:linear-gradient(145deg,rgba(8,22,26,.95),rgba(6,11,14,.95));text-align:center}.end-card span{display:block;font-size:40px;font-weight:900;letter-spacing:.18em;color:var(--cyan)}.hud-end.is-defeat .end-card{border-left-color:var(--danger)}.hud-end.is-defeat .end-card span{color:var(--danger)}.end-card b{display:block;font:800 26px/1 ui-monospace,monospace;margin:12px 0 6px}.end-card p{font-size:11px;color:#9fb1b4;margin:0 0 18px}.end-board{font-size:11px;margin-bottom:20px}.end-board div{display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid rgba(134,209,210,.12)}.end-card button{pointer-events:auto;width:100%;height:48px;border:1px solid var(--cyan);background:rgba(94,205,203,.14);color:white;font-weight:900;letter-spacing:.16em;cursor:pointer}.end-card button:hover,.end-card button:focus-visible{background:rgba(94,205,203,.3);outline:2px solid white;outline-offset:2px}
+      .hud-end{position:absolute;inset:0;display:grid;place-items:center;pointer-events:auto;background:radial-gradient(circle at 50% 40%,rgba(10,26,31,.72),rgba(2,5,7,.95))}.end-card{width:min(560px,calc(100vw - 32px));padding:36px;border:1px solid rgba(134,209,210,.28);border-left:3px solid var(--cyan);background:linear-gradient(145deg,rgba(8,22,26,.95),rgba(6,11,14,.95));text-align:center}.end-card>#end-result{display:block;font-size:40px;font-weight:900;letter-spacing:.18em;color:var(--cyan)}.hud-end.is-defeat .end-card{border-left-color:var(--danger)}.hud-end.is-defeat .end-card>#end-result{color:var(--danger)}.end-card b{display:block;font:800 26px/1 ui-monospace,monospace;margin:12px 0 6px}.end-card p{font-size:11px;color:#9fb1b4;margin:0 0 18px}.end-board span,.end-board i{font-size:11px;letter-spacing:.04em}.end-board{font-size:11px;margin-bottom:20px;display:flex;gap:14px;text-align:left}.end-team{flex:1}.end-head{display:flex;justify-content:space-between;font-weight:900;font-size:12px;padding-bottom:5px}.end-team.is-alpha .end-head{color:var(--cyan)}.end-team.is-bravo .end-head{color:var(--bravo)}.end-legend,.end-row{display:grid;grid-template-columns:1fr 26px 26px 40px}.end-legend{font-size:9px;color:#7f979b;padding-bottom:3px}.end-row{padding:2px 0;border-bottom:1px solid rgba(134,209,210,.1);color:#c6d8da}.end-row i{font-style:normal;text-align:right}.end-row.is-human{color:#fff;font-weight:900;background:rgba(131,230,228,.12)}.end-card button{pointer-events:auto;width:100%;height:48px;border:1px solid var(--cyan);background:rgba(94,205,203,.14);color:white;font-weight:900;letter-spacing:.16em;cursor:pointer}.end-card button:hover,.end-card button:focus-visible{background:rgba(94,205,203,.3);outline:2px solid white;outline-offset:2px}
       .hud-scoreboard{position:absolute;inset:0;display:grid;place-items:center;background:rgba(2,6,8,.72)}.board-wrap{display:flex;gap:20px}.board-team{width:290px;border-top:2px solid var(--cyan);background:rgba(5,16,20,.92);padding:14px}.board-team.is-bravo{border-top-color:var(--bravo)}.board-head{display:flex;justify-content:space-between;font-weight:900;font-size:13px;margin-bottom:10px}.board-team.is-bravo .board-head{color:var(--bravo)}.board-team.is-alpha .board-head{color:var(--cyan)}.board-row{display:grid;grid-template-columns:1fr 34px 34px 52px;font-size:11px;padding:4px 0;border-bottom:1px solid rgba(134,209,210,.1);color:#c6d8da}.board-row.is-dead{opacity:.45}.board-row.is-human{color:#fff;font-weight:800}.board-row i{font-style:normal;text-align:right}.board-legend{display:grid;grid-template-columns:1fr 34px 34px 52px;font-size:9px;color:#7f979b;padding-bottom:4px}
       .hud-briefing{position:absolute;inset:0;pointer-events:auto;display:grid;place-items:center;background:radial-gradient(circle at 50% 40%,rgba(15,31,36,.58),rgba(2,6,8,.94));backdrop-filter:blur(5px);transition:opacity .25s}.hud-briefing.is-hidden{opacity:0;pointer-events:none}.briefing-card{width:min(520px,calc(100vw - 32px));padding:42px;border:1px solid rgba(134,209,210,.25);border-left:3px solid var(--cyan);background:linear-gradient(145deg,rgba(8,22,26,.94),rgba(6,11,14,.94));box-shadow:0 25px 80px #000}.briefing-eyebrow{font-size:10px;color:var(--cyan)}.briefing-card h1{font-size:52px;line-height:1;margin:13px 0 16px;letter-spacing:.13em}.briefing-card p{font-size:13px;line-height:1.7;color:#aebec0;letter-spacing:.02em}.briefing-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin:24px 0;font-size:9px;color:#778d91}.briefing-grid b{display:block;color:white;font-size:11px;margin-bottom:3px}.briefing-card button{pointer-events:auto;width:100%;height:48px;border:1px solid var(--cyan);background:rgba(94,205,203,.12);color:white;font-weight:900;letter-spacing:.16em;cursor:pointer}.briefing-card button:hover,.briefing-card button:focus-visible{background:rgba(94,205,203,.28);outline:2px solid white;outline-offset:2px}.briefing-card button i{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--cyan);box-shadow:0 0 9px var(--cyan);margin-right:9px}.briefing-card small{display:block;text-align:center;color:#65777a;font-size:9px;margin-top:14px}
       @media(max-width:680px){.hud-match{top:8px;gap:10px;padding:6px 12px}.hud-match .hud-team b{font-size:20px}.hud-objective{left:14px;top:74px;min-width:190px;padding:8px 12px}.hud-objective-title{font-size:11px}.hud-compass{top:172px;width:280px}.hud-controls{display:none}.hud-health{left:16px;bottom:20px;width:170px}.hud-ammo{right:16px;bottom:20px}.hud-ammo-row b{font-size:34px}.hud-feed{right:14px;top:170px;font-size:10px}.briefing-card{padding:28px}.briefing-card h1{font-size:38px}.briefing-grid{grid-template-columns:repeat(2,1fr)}.board-wrap{flex-direction:column;gap:10px}.board-team{width:min(320px,calc(100vw - 24px))}}`;
@@ -369,9 +379,10 @@ export class UISystem {
     }
     const lead = scores.alpha === scores.bravo ? 'tied' : scores.alpha > scores.bravo ? 'alpha' : 'bravo';
     const remaining = Math.min(scores.limit - scores.alpha, scores.limit - scores.bravo);
-    // Proportional to the ruleset: 5 kills out at the default limit of 100, but
-    // a scenario running a short limit should not call match point at 1-0.
-    const matchPointAt = Math.max(2, Math.round(scores.limit * 0.05));
+    // A fixed run-in reads as a climax; a percentage of the limit does not. At
+    // the old 5%-of-100 threshold MATCH POINT required a team on 95 and never
+    // fired in a real match, because matches were expiring around 60.
+    const matchPointAt = Math.max(2, Math.min(5, Math.round(scores.limit * 0.12)));
     if (!this.matchPointShown && remaining <= matchPointAt && remaining > 0) {
       this.matchPointShown = true;
       this.announce('MATCH POINT', `${scores.limit - Math.max(scores.alpha, scores.bravo)} TO WIN`, lead === 'alpha' ? 'is-good' : 'is-bad');
@@ -430,8 +441,13 @@ export class UISystem {
     this.els.endResult.textContent = match.winner === 'draw' ? 'DRAW' : won ? 'VICTORY' : 'DEFEAT';
     this.els.endScore.textContent = `${scores.alpha} — ${scores.bravo}`;
     this.els.endReason.textContent = match.endReason === 'score-limit' ? 'Score limit reached.' : 'Time limit reached.';
+    // The end card used to print two team totals and nothing else, so a player
+    // finished a match without ever being shown their own kills or deaths.
     const board = match.getScoreboard();
-    this.els.endBoard.innerHTML = board.map((team) => `<div><span>${team.name}</span><span>${team.score}</span></div>`).join('');
+    this.els.endBoard.innerHTML = board.map((team) => {
+      const rows = team.players.map((entry) => `<div class="end-row${entry.kind === 'human' ? ' is-human' : ''}"><span>${entry.name}</span><i>${entry.kills}</i><i>${entry.deaths}</i><i>${entry.score}</i></div>`).join('');
+      return `<div class="end-team is-${team.id}"><div class="end-head"><span>${team.name}</span><span>${team.score}</span></div><div class="end-legend"><span>OPERATOR</span><i>K</i><i>D</i><i>PTS</i></div>${rows}</div>`;
+    }).join('');
     this.els.death.hidden = true;
     if (!this.ctx.harness.active) document.exitPointerLock?.();
   }

@@ -236,6 +236,21 @@ export class Engine {
       crouch: 'crouch',
       jump: 'jump',
     };
+    // Visual inspection: stand the player at a chosen spot and facing so a
+    // capture run can photograph new geometry from actual eye height.
+    if (name === 'inspect_from') {
+      const player = this.ctx.get('player');
+      player.position.set(Number(options.x) || 0, Number(options.y) || 0, Number(options.z) || 0);
+      player.yaw = Number(options.yaw) || 0;
+      player.pitch = Number(options.pitch) || 0;
+      player.velocity?.set?.(0, 0, 0);
+      // Render through the player's own camera, not the canonical capture pose,
+      // so the shot shows what a player standing here actually sees.
+      const render = this.ctx.peek('render');
+      if (render) { render.useCaptureCamera = false; render.showViewmodel = true; }
+      this.stepFrames(frames);
+      return this.snapshot();
+    }
     if (name === 'look_right') {
       input.injectLook(120, 0);
       this.stepFrames(frames);

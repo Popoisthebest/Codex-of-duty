@@ -318,24 +318,563 @@ Alpha and contributes roughly its share of the difference.
 | Texture stretched up to 11:1 | UV `repeat` is per material; box UVs are 0..1 per face regardless of face size | Per-face UV scaling by world dimensions, baked into the size-keyed geometry cache |
 | Teams 1.9% luminance apart | Palettes both sat inside the environment range | Cool-teal vs warm-rust kits plus emissive marker bands matching the HUD's cyan/orange |
 
+---
+
+## Pass 5 — independent gameplay review landed, and it was right
+
+The gameplay director completed after three blocked attempts. Verdict: *"a
+competent tech demo wearing a match loop."* Its headline finding was one no
+internal metric had caught, because every soak had been run at shortened
+scenario rules rather than production rules.
+
+### The advertised win condition was unreachable
+
+At production rules (limit 100, 600 s) the director ran five matches: **four
+ended on the clock** at 45-68 kills. Measured leader throughput was ~0.107
+kills/s, so reaching 100 needed ~937 s inside a 600 s match. Consequences:
+
+- `MATCH POINT` required a team on 95 and **never fired in a real match**.
+- The end card read `Time limit reached.` over a score that never approached the
+  number the HUD promised on every frame.
+- One lead change in ten minutes; matches decided in the first three.
+
+Root cause: score limit, time limit and respawn delay were each set independently
+and never validated against the kill rate the systems actually produce.
+
+Fix — calibrated against measured throughput, then verified at production rules
+across five seeds:
+
+| seed | ends by | score | duration |
+|---|---|---|---|
+| 1337 | score-limit | 50-27 | 4.5 min |
+| 11 | score-limit | 50-36 | 6.1 min |
+| 777 | score-limit | 50-40 | 5.8 min |
+| 20240 | score-limit | 50-31 | 4.4 min |
+| 4242 | score-limit | 50-45 | 6.6 min |
+
+**5 of 5 now end on the condition the player was given.** `MATCH POINT` is a
+fixed five-kill run-in rather than 5% of the limit, so it fires in a real match.
+
+Every statement of the win condition — HUD mode line, objective line, briefing —
+is now rendered from `match.scoreLimit` instead of a hardcoded `100`. Changing
+the rule can no longer leave the UI promising a different one.
+
+### Respawn faced the map boundary
+
+Spawn yaw was a per-team literal baked into the spawn point (`alpha 3.14`,
+`bravo 0`) and never consulted the situation. Measured forward clearance along
+each spawn's own yaw: **all 17 Bravo spawns under 15 m, median 5.8 m, minimum
+1.0 m.** Players and bots re-entered nose-to-wall with the map behind them.
+
+`chooseSpawnYaw` now evaluates twelve candidate facings per spawn, scoring
+measured forward clearance first and bearing to the nearest live enemy second.
+
+### Re-entry downtime and the end card
+
+- `RESPAWN_SECONDS` 4.5 -> 3.2; spawn distance band 30/40 -> 26/34 m. The 30 m
+  floor had been set against the aimbot-driver artifact.
+- Spawn deaths stayed safe at the tighter band: **0.79% mean, 4.76% worst across
+  six seeds**, inside the reviewer's 5% criterion on every seed.
+- The end card printed **two team totals and nothing else** — a player finished a
+  match never seeing their own kills or deaths. It now lists per-player K/D/PTS
+  for both teams with the human row highlighted.
+
+---
+
+## Pass 6 — a driver that plays, and elevation that can be seen out of
+
+### The scripted player now plays
+
+`src/core/player-driver.js` replaces the old `drivePlayer`. It goes through the
+production input path only: virtual movement actions, and **`input.injectLook`
+for turning — the same channel the mouse feeds** — with a capped turn rate. It
+never writes yaw or pitch directly.
+
+It is deliberately not omniscient: it only notices opponents inside its own view
+cone, within 46 m, with real line of sight, and needs a 0.28 s reaction before it
+tracks one. Aim converges over time and keeps residual error that grows with
+range, so it cannot headshot on sight.
+
+| | old driver | new driver |
+|---|---|---|
+| zones visited | effectively 1 (camped) | **7.5 mean** (6-8) |
+| distance travelled | 0 m | **615 m mean** |
+| kills / deaths | n/a (aimbot or camper) | **10.2 / 3.8 mean** |
+| blocked recoveries | walked into walls | 24.5 mean |
+
+Two bugs found while building it, both mine:
+
+- Movement was measured *within* one update, but the fixed step runs *between*
+  updates, so travel always read zero and the stuck detector fired every frame
+  (103 recoveries per run). Progress is now sampled against the previous update.
+- Rewiring the driver dropped `recorder.pollScores(match)` from the step
+  callback, which broke the `usedProductionScoring` evidence check. `gameplay:check`
+  caught it.
+
+### Player-facing pacing, measured by something that plays
+
+Six seeds x 150 s. **These are one scripted human, kept separate from the
+twelve-actor aggregates below.**
+
+| human metric | mean | sd | range |
+|---|---|---|---|
+| kills / deaths | 10.2 / 3.8 | 6.3 / 2.1 | 0-21 / 0-7 |
+| zones visited | 7.5 | 0.8 | 6-8 |
+| distance travelled | 615 m | 146 | 302-734 |
+| combat time | 15.1% | 8.0 | 0.4-25.8% |
+| travel time | 77.2% | 11.7 | 66-99.6% |
+| dead time | 7.7% | 4.3 | 0-14.1% |
+| first contact | 7.0 s | 9.4 | 1.4-27.5 |
+| respawn-to-contact p50 | 5.3 s | 3.7 | 2.7-12.4 |
+| no-contact gap p90 | 26.4 s | 17.9 | 13.5-64.2 |
+
+Twelve-actor aggregate, same runs: kills 35.7, spawn-death rate 2.07%,
+respawn-to-contact 8.3 s, lifetime p50 27.9 s, killer distance p50 15.2 m.
+
+The honest read: the player spends **77% of its time travelling and 15% fighting**,
+and the p90 gap between contacts is 26 s. Gate D's ">15 s of aimless wandering"
+flag is still firing.
+
+### Elevation: sightlines fixed, usage not yet
+
+Auditing every reachable elevated nav node with a 24-ray fan from the standing
+eye position found the reviewer was right, and quantified it. It also exposed a
+**structural bug in `wallRun`**: each wall segment resolved openings with
+`.find()`, so it honoured only the *first* opening crossing it. A ground doorway
+and an upper firing gallery overlapping in plan silently cancelled the gallery —
+which is why upper floors measured as sealed boxes despite having galleries
+authored into them.
+
+Open-arc (fraction of directions with 25 m+ clearance) from the eye position,
+level look:
+
+| zone | before | after |
+|---|---|---|
+| east-offices upper | 8.8% (best node 25%) | **36.3% (best 75%)** |
+| depot mezzanine | 2.3% (best 8%) | 13.5% (best 29%) |
+| east-terrace | 21.1% | 36.3% (best 71%) |
+| west-yard catwalk | 33.6% | 49.1% (best 67%) |
+| north-junction overpass | 40.4% | 64.7% (best 75%) |
+
+**But elevation is still not used in combat**: elevated occupancy 4.8 samples per
+run, human elevated time 1.3%. The positions are now worth occupying; nothing yet
+routes actors to them often enough to prove it. This half of the task is not done.
+
+---
+
+## Pass 7 — why rational agents avoided elevation
+
+### Instrumenting the decision instead of guessing
+
+`AISystem` now traces the whole goal lifecycle — chosen goal, whether it was
+elevated, route length, stair count, waypoints actually progressed, and the
+reason the goal ended (`arrived` / `died` / `stuck`). `goalReport()` aggregates
+it. That turned an unanswerable "elevation is unused" into a specific finding.
+
+**Elevation was being chosen constantly and never reached.**
+
+| elevated goal outcome | count | mean straight-line | mean path nodes | mean progressed | mean seconds |
+|---|---|---|---|---|---|
+| died | 13 | 47.5 m | 30.1 | 9.0 of 30 | 31.0 s |
+| stuck | 7 | 58.4 m | 40.9 | 3.7 of 41 | 18.8 s |
+| **arrived** | **0** | — | — | — | — |
+
+Ground goals that *did* arrive averaged 19.7 m and 2.4 path nodes.
+
+Root cause: goals were drawn uniformly from a zone, and zones are 30–60 m across.
+An elevated objective was therefore ~50 m away down a 30–40 waypoint route — a
+trip that outlasts a 28 s median life. Elevation was not rejected; it was
+**unreachable within a life**. The earlier hard 45%/72% "prefer height"
+probability could not fix that and was masking it.
+
+### Fix: a utility model, not a probability
+
+The height probability is gone. Goal selection now samples candidates and keeps
+the best **value ÷ travel cost**:
+
+- *value* = what the position overlooks (baked per nav node at world build time
+  as an 8-ray open-arc fraction from standing eye height) plus a small premium
+  for high ground.
+- *cost* = distance, plus an extra penalty for climb, because stairs are slow and
+  expose the climber.
+
+Candidates come from the lane objective (two thirds) and the bot's current
+surroundings (one third). Choosing the zone first and only then scoring inside it
+meant every candidate was as far away as that zone happened to be, so a rooftop
+two streets over never competed with a distant one.
+
+Elevation now wins when it is close enough to be worth the climb — the same
+judgement a player makes.
+
+### Measured across six seeds x 150 s
+
+| metric | pass 6 | pass 7 |
+|---|---|---|
+| elevated occupancy samples | 4.8 | **9.8** |
+| stuck per 1000 path advances | 24.8 | **14.9** |
+| human no-contact gap p90 | 26.4 s | **18.7 s** |
+| human respawn-to-contact p50 | 5.3 s | **4.4 s** |
+| human combat time | 15.1% | **19.3%** |
+| spawn death rate | 2.07% | 1.63% |
+| kills (12 actors) | 35.7 | 27.2 |
+| largest zone kill share | market ~30% | west-yard 27.6% |
+
+Indoor zones now take real kills (depot 7.1%, east-offices 5.0%) and no zone
+exceeds 28% — the distribution did not collapse into a new kill box.
+
+Kills fell ~24%. That is the honest cost of bots spending more time repositioning
+and less time funnelled down one corridor; the human driver's combat time rose
+over the same runs, so the match did not get quieter for the player.
+
+### A tuning attempt that measured worse, and was reverted
+
+Weighting local candidates 1-in-4 with a softer distance term (`GOAL_DISTANCE_SCALE`
+24) produced kills 14 and elevated time 2.1%. Pure value÷cost with bounded value
+and unbounded cost is myopic: near goals always win and bots stop pushing. The
+1-in-3 / scale-16 configuration is kept because it measured better on both counts.
+
+---
+
+## Pass 8 — expected enemy presence: implemented, measured, reverted
+
+### What was built
+
+`src/match/combat-heat.js` is a decaying spatial field of **observed** combat
+activity, fed only by things that are noticeable in the world:
+
+- gunfire (`ai:fired`, `weapon:fired`) at the shooter's position
+- deaths (`actor:died`) at the victim's position
+- confirmed sightings (`combat:contact`) at the *seen* actor's position
+
+Heat halves every 12 s, so it describes where the fight is rather than where it
+was. It is kept as **one field per team**, recording where that team has been
+observed acting. Nothing writes an unseen actor's position, so it cannot be used
+as an enemy locator — it is the same information a player gets from gunfire, the
+kill feed and their own eyes.
+
+The field is retained and instrumented (`match.contactPressure(team, x, z)`,
+`match.heatHotspots(team)`).
+
+### Why it does not drive goal choice
+
+Wiring it into the tactical-goal utility **measured worse on every axis that
+matters**, across the same six-seed harness:
+
+| metric | pass 7 (overlook only) | with contact pressure |
+|---|---|---|
+| bot kills | 27.2 | **13** |
+| human combat time | 19.3% | **4.8%** |
+| Gate D no-contact p90 | 18.7 s | **43.3 s** |
+| elevated goal distance | 16.6 m | 10.3 m |
+
+Two reasons, both diagnosable from the traces:
+
+1. **Recent-contact heat is a lagging signal.** By the time a bot walks to where
+   fighting was observed, the fight has moved.
+2. **It is self-reinforcing at short range.** A bot heats the cells it has just
+   fought in, then scores nearby positions higher because of its own activity.
+   Combined with a value ÷ cost score whose denominator is distance, that made
+   goals *even more local* — elevated objectives fell to ~10 m away and bots
+   stopped traversing the map at all.
+
+A first attempt used a single shared field, which was worse still: it counted a
+bot's own squad's gunfire as evidence of enemy presence, so teams walked toward
+themselves. Making the field team-relative fixed that specific error but did not
+rescue the outcome.
+
+**The change was reverted rather than shipped.** A re-run after the revert
+reproduces the pass-7 numbers exactly (kills 27.17, gap p90 18.73, elevated
+occupancy 9.83), confirming no residue.
+
+### What this means for the underlying problem
+
+Elevation value needs a *predictive* signal — where fighting is about to happen —
+not a record of where it has been. Candidates not yet tried: lane pressure from
+both teams' current objectives, spawn-flow projection, or valuing a position by
+how much of the enemy's likely approach route it covers. Recent-contact heat is
+the wrong shape for this and the measurement says so.
+
+Gate D was untouched by this pass and remains at p90 18.7 s.
+
+### Gate D diagnosed: the cause is occlusion between adjacent zones, not pacing
+
+The driver now classifies **every** no-contact frame by why nobody is visible,
+and records where the blocking geometry sits along the ray. Six seeds:
+
+| gap cause | share |
+|---|---|
+| `occluded` — enemy inside 46 m, geometry blocks the ray | **75.9%** |
+| `behind` — clear line of sight, outside the view cone | 15.5% |
+| `far` — nearest enemy beyond spotting range | **8.7%** |
+
+Mean nearest enemy **during** a gap is **25.6 m**. So the two obvious levers are
+both ruled out by measurement: the enemies are not far away (raising sight range
+changes nothing when the ray is blocked) and they are not badly distributed
+(moving spawns closer changes nothing at 25 m).
+
+Two follow-up measurements narrowed it further:
+
+- **Blocker position along the ray**: 43.4% near the player, 41.8% mid-ray,
+  14.8% near the target. The mid-ray share is whole structures standing between
+  two nearby combatants.
+- **Clearance (nearest wall in 8 directions)**: 2.85 m during gaps vs 2.79 m
+  during contact. Essentially identical, which **disproves** the hypothesis that
+  routes hug walls and starve a travelling player of sightlines. That idea was
+  dropped rather than implemented.
+
+Gap seconds concentrate in market (163 s) and east-terrace (151 s) — two adjacent
+zones sharing a 42 m boundary — and the longest gaps are all traffic between
+them (`zone: east-terrace, goal: market`, 45 s, 84% occluded).
+
+**Conclusion:** adjacent zones are mutually invisible. Combatants pass within
+25 m of each other separated by continuous structure, so contact depends on
+walking to a crossing point rather than seeing across. The fix is map topology —
+lateral sightlines across the market/east-terrace boundary — not AI or pacing
+tuning.
+
+That change was **not** made in this pass. It is level surgery on the map's
+busiest boundary and needs a full six-seed plus six-gate validation cycle to be
+trustworthy; making it without that would be exactly the untested tuning this
+project's process forbids. Gate D therefore remains at p90 18.7 s.
+
+All six gates are green and the six-seed numbers are byte-identical to pass 7
+(kills 27.17, gap p90 18.73, spawn deaths 1.63%), confirming the new telemetry is
+measurement-only and changes no behaviour.
+
+---
+
+## Pass 9 — market ↔ east-terrace topology repaired, Gate D closed
+
+### The actual defect
+
+Runtime blocker attribution (every occluded sightline resolved to the specific
+solid that blocked it) put the top boundary blocker at a single mass, and reading
+the source explained why:
+
+The market's **east building row** — `BUILDINGS` at x ≈ 9.0–9.35, z = 8 / −2.5 /
+−13 — forms a near-continuous 31 m wall from z −18 to z +12.75. Its only
+ground-level opening was the underpass at z −2.5. Worse, the east-terrace deck's
+only market-side stair sat at **x 13.6, z −2.5 — the same z**. So every
+market↔terrace crossing, on foot and by sightline, funnelled through one point.
+That is the mechanism behind "combatants 25 m apart who never see each other".
+
+### The change
+
+Four openings, deliberately split between traversal and sight, and spread apart
+so no single new angle dominates:
+
+| change | kind | effect |
+|---|---|---|
+| collapsed shopfront through the z −13 block (z −15.8…−12.8, y 0…2.7) | traversal | second ground crossing, into the southern flank where no stairs are needed |
+| window slot in the same block (z −10.6…−8.8, y 1.3…2.3) | sight only | see across the boundary without a route |
+| northern stair onto the low deck (x 13.6, z 11.5) | traversal | the deck stops being single-entry; elevation becomes contestable |
+| offices west-wall band (z −7…−3.5, y 2.4…3.6) | sight only | the ground floor stops being a solid block |
+
+The baseline market buildings are **not** removed or moved. The monolithic box is
+rebuilt as a wall run with openings — identical footprint, height and material —
+so the preserved visual block keeps its identity. The breach gets rubble
+shoulders for cover at both mouths and a lamp, so it reads as damage rather than
+a hole.
+
+### Result (6 seeds, production rules, realistic driver)
+
+| metric | pass 8 | pass 9 |
+|---|---|---|
+| **human no-contact p90** | 18.73 s | **11.18 s** |
+| human no-contact max | 45 s (longest single gap) | **17.8 s** |
+| human no-contact p50 | — | 3.6 s |
+| human combat time | 19.3% | **20.8%** |
+| elevated occupancy | 9.83 | **18.50** |
+| stuck per 1k path advances | 14.86 | **9.14** |
+| bot kills | 27.17 | 24.83 |
+| spawn death rate | 1.63% | 3.70% |
+
+**Gate D passes** (p90 11.2 s against the 15 s flag).
+
+The mechanism is worth recording because it is not the obvious one: overall
+occlusion barely moved (75.9% → 73.4%), but `behind` — clear line of sight, just
+outside the view cone — rose 15.5% → 19.8%. Sightlines now *exist*; the long tail
+was the funnel, not raw occlusion. That is why opening four small holes halved a
+p90 that raising sight range could never have touched.
+
+### Kill-box check (the change had to be rejected if it merely relocated kills)
+
+Kill positions are now recorded. Of 149 kills across six seeds:
+
+- within 8 m of the new breach: **9.4%**
+- within 8 m of the new northern stair: **1.3%**
+- within 8 m of the old underpass: 3.4%
+- across the whole modified band (x 6…20, 14 m wide): 28.9%
+- densest 10 m cell anywhere: (20, −20) at 10.7% — existing terrace ground, not
+  new geometry
+
+No new location dominates. Zone shares moved from west-yard-led (28%) to
+east-terrace-led (31%), which is redistribution toward a previously dead flank,
+not concentration.
+
+### Costs, stated plainly
+
+- **Bot kills 27.2 → 24.8** (−8.6%, against a seed sd of 5.2). Not a collapse,
+  but throughput did not improve; more of the map is in play per fight.
+- **Spawn deaths 1.63% → 3.70%.** All five sampled events have
+  `killer: 'player'` — the human driver now meets fresh spawns more often
+  because it travels further. No bot-caused spawn deaths. Worth rechecking if it
+  climbs.
+
+### Visual check
+
+Both sides of every opening captured at player eye height
+(`tools/boundary-shots.mjs`, `artifacts/boundary/`). The breach reads as a lit
+passage with cover at both mouths; the deck approach is not an overpowered
+overlook — the market's east row still blocks the deck's westward view at z ≈ 4,
+so the new elevation is useful without being dominant.
+
+Unrelated artifact noticed: lit windows (`warmWindow`) render as flat untextured
+orange panels at close range. Pre-existing, logged for the polish pass.
+
+### Tooling added this pass
+
+- `physics.raycastWorldBlocker()` — resolves a blocked ray to the specific solid
+- driver blocker attribution, boundary-pair detection, clearance sampling
+- `match.telemetry.killSpots` — kill positions, for kill-box tests
+- `runAction('inspect_from')` — place the player and render through their own
+  camera, for eye-height inspection
+- `tools/boundary-shots.mjs`
+
+---
+
+## Pass 10 — pass-9 defect repair, then the real blocker: combatant lethality
+
+### Defects the map reviewer found in pass 9 (all mine, all fixed)
+
+1. **Rubble shoulders were entombed inside the wall.** They were offset along z
+   from the wall centre, so both landed inside the solid flanks. The cover pass 9
+   claimed to deliver did not exist. The mouths are the two *x* faces; they now
+   flank each mouth in x, placed outside the opening in z.
+   A first correction put them in the bore and turned the 3 m passage into a
+   chicane — no-contact p90 regressed 11.2 → 23.2 s. Caught by measurement, and
+   the final placement leaves the bore clear.
+2. **`facade()` drew trim across the breach.** The rear-elevation call never
+   received `b.openings`, so a base course ran across the full mouth and a 0.55 m
+   pilaster sat dead centre. Both are mesh-only, so they blocked the player's
+   bullets and sight while AI collider rays passed straight through — the gun
+   appears not to work. `openings` is now passed through.
+3. **Two drainpipes stood inside openings** (one through the window slot, one in
+   the breach's east mouth), the same mesh/collider mismatch. `clearOfOpenings()`
+   now nudges decoration out of any doorway.
+
+### The actual blocker: an approximately 20x lethality gap
+
+The gameplay reviewer measured what nine passes of honest aggregate telemetry had
+hidden:
+
+| | player | bot (before) |
+|---|---|---|
+| TTK, 5 m, clear LOS, stationary target | 0.217 s | **12.51 s** |
+| hits needed per kill | 3.8 | 10.5 |
+| expected damage per shot | 34 | **~4.9** |
+
+Bots had a to-hit cap of 46% for 8–12 damage. A bot needed twelve and a half
+seconds of unbroken line of sight to kill a stationary target, so bot-versus-bot
+fights essentially never resolved. The consequence, per-participant:
+
+- the human took **59% of their team's score** and 35.5% of all kills in a match
+- ally bots averaged 4.1 kills; one finished a match 0/4
+- the human's team won **5 of 5** production matches, with 0 lead changes in 3
+
+This is a damage-model defect, not a driver artifact: the scripted driver's
+*accuracy* edge is only 1.35x. It was authored per-actor — the player weapon
+tuned for feel, the AI weapon tuned so "a fight is a decision" — and the two were
+never validated against each other.
+
+### The change
+
+Bot to-hit `clamp(0.6 − 0.012d, 0.15, 0.46)` → `clamp(0.68 − 0.011d, 0.18, 0.54)`,
+damage 8–12 → 16–21, inter-burst pause 0.95–1.60 s → 0.70–1.15 s. Player weapon
+untouched — the strong weapon feel is the baseline and the gap is closed from the
+weak side.
+
+**Health regeneration added** (`REGEN_DELAY` 4.5 s, 18 hp/s, suspended by
+incoming fire). There was none anywhere: the player never lost a *fight*, they
+bled out by chip damage accumulated across a whole life, which made every duel
+consequence-free and every death arbitrary.
+
+### Result (6 seeds, production rules)
+
+| metric | pass 9 | pass 10 |
+|---|---|---|
+| total kills | 24.83 | **29.17** |
+| human share of all kills | 35.5% | **17.1%** |
+| kills per ally bot per run | 0.83 | **2.20** |
+| bots finishing with 0 kills | 8/66 | 5/66 |
+| human K/D | ~3.0 | 0.86 |
+| spawn death rate | 3.70% | **0.52%** |
+| stuck per 1k | 9.14 | 8.61 |
+| no-contact p90 | 11.18 s | 16.28 s |
+| largest zone kill share | 31% (east-terrace) | 29% (east-terrace 29 / market 28) |
+
+Throughput went **up**, not down: making eleven props into combatants adds more
+fights than the player loses. Kill distribution is also flatter.
+
+### Known issues, accepted
+
+Per direction, structural chasing stops here. Recorded, not fixed:
+
+- **Human K/D 0.86 against a 1.2–2.0 target.** The scripted driver is
+  deliberately handicapped (54° cone, 0.28 s reaction, residual aim error); a
+  real player performs better. Bot lethality was already pulled back one notch
+  from a first setting that gave K/D 0.67.
+- **No-contact p90 16.3 s, above the 15 s flag.** This is a *different*
+  mechanism from the pass-9 wandering: the player now dies more, so the gap is
+  respawn downtime, not failure to find a fight. Topology is not the cause.
+- **alpha-yard is 25.9% of walkable area for 0.49% of kills** (density index
+  0.02); bravo-yard 0.27. The depot is fine (1.37). north-junction is
+  over-concentrated at 3.92 and is also the least-covered zone on the map
+  (p90 12.5 m to cover, 25.7% of nodes over 6 m).
+- **The low deck's south lip** (x 15–34, z −13) is the strongest overwatch on the
+  map and covers both breach mouths. The new north stair is 3x more exposed than
+  the old underpass for a destination that cannot see the market.
+- **Zero elevated nav nodes** in market, alpha-yard or bravo-yard — 45% of
+  walkable area with no second level. `elevatedCombatTimePct` ~0.09%: bots
+  transit elevation, nobody fights from it. Occupancy was the wrong proxy.
+- **The arcade** — the polished visual baseline interior — carries 0.0% of route
+  traffic and is visible from 2 of 468 sampled positions.
+- **Every match starts from seed 1337** (`src/main.js`), so boot and REMATCH
+  begin with identical bot deployment.
+- **`runTdmCore` builds `result.human` after its restart-verification reset**, so
+  those kill/death fields are structurally always 0.
+- **No gate runs production rules**: `gameplay:check` uses scoreLimit 12, the
+  soak uses 100000. Win-condition reachability is not covered by CI.
+
+### Quality phase, started
+
+- **Lit windows** were a flat emissive colour that read as an orange rectangle up
+  close. Now a generated interior — ceiling falloff, off-centre bulb, blinds or
+  curtain or furniture silhouette, grime — in three variants so a facade is not a
+  repeated stencil.
+- **Bot locomotion** was a fixed 6 rad/s leg swing gated on AI state, so feet slid
+  and bots walked on the spot while holding an angle. Gait now advances with
+  measured ground speed, with footfall weight twice per stride, run lean, and
+  rifle counter-swing.
+
 ## Remaining highest-impact problems
 
-1. **Environment filler** (visual critic, still open): staging yards repeat five
-   identical tents and six identical crates across 100 m; the north junction has
-   six identical barricades; `addWreck` and `addSandbagLine` are each one
-   silhouette reused 10-20 times. Composition and prop variety, not scale.
-2. **Elevation use remains thin** — elevated occupancy averages 6.5 samples per
-   150 s run across all zones.
-3. **Indoor zones still lightly used** — arcade 1.3% and east-offices 2.7% of
-   occupancy; the arcade has only 9 nav nodes and is really a corridor.
-4. **Market lighting trade unresolved** — hemisphere 1.86 and fog 0.0138 were set
-   for the new zones before the shadow cascade was fixed. Now that shadowing
-   covers the engagement range, the ambient lift may no longer be needed. Should
-   be judged by eye, not by pixel-diff percentage.
-5. **respawn-to-contact 11.2 s** with a 28 s median life — roughly a third of a
-   life is spent travelling.
-6. Not started: animation quality, character presentation beyond team colour,
-   death/respawn presentation.
+1. **Elevated combat** — occupancy 4.8 -> 9.8 (pass 7) -> 18.5 (pass 9, from
+   giving the deck a second approach). Topology moved this far more than the
+   utility model did. `elevatedCombatTimePct` is still low; a *predictive*
+   presence term is still missing (recent-contact heat was tried in pass 8 and
+   measured worse).
+2. **Gate D cleared in pass 9** (p90 11.2 s). Watch spawn deaths (1.6% -> 3.7%,
+   all player-caused) and bot kill throughput (27.2 -> 24.8) on the next soak.
+3. **Bot kill throughput** 27.2 mean, down from 35.7 before the pass-7 goal
+   model. Zone spread improved in exchange; worth a longer run to confirm the
+   trade.
+4. **Zone budget** — bravo-yard and alpha-yard each under 2% of kills.
+5. **Market navigation blackspot** still present.
+6. **Lead changes (Gate B)** — matches still decided early.
+7. **Environment filler**, market lighting trade — unchanged since pass 4.
+8. Not started: animation, character presentation, death/respawn presentation,
+   audio layering beyond distance/team, match-flow presentation.
 
 ## Defects found and fixed (cumulative)
 

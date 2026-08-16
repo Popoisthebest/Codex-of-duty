@@ -11,7 +11,18 @@ const BUILDINGS = [
   { x: -9.4, z: -13, w: 5.2, h: 7.4, d: 10, mat: 'plasterWarm' },
   { x: 9.2, z: 8, w: 4.8, h: 7.8, d: 9.5, mat: 'plasterWarm' },
   { x: 9.0, z: -2.5, w: 4.6, h: 6.4, d: 10, mat: 'plasterBlue', underpass: [-4.35, -0.65] },
-  { x: 9.35, z: -13, w: 5.1, h: 9.2, d: 10, mat: 'brick' },
+  // The east row used to be a continuous 31 m mass from z -18 to z 12.75 whose
+  // only ground opening was the underpass at z -2.5, so every market/terrace
+  // crossing funnelled through one point and combatants 25 m apart never saw
+  // each other. A collapsed shopfront adds a second crossing into the southern
+  // flank, and a window slot gives sight without a route.
+  {
+    x: 9.35, z: -13, w: 5.1, h: 9.2, d: 10, mat: 'brick',
+    openings: [
+      { from: -15.8, to: -12.8, y0: 0, y1: 2.7, breach: true, transition: ['east-market-breach', 'east-terrace'] },
+      { from: -10.6, to: -8.8, y0: 1.3, y1: 2.3 },
+    ],
+  },
 ];
 
 const BOUNDS = { minX: -50, maxX: 50, minZ: -56, maxZ: 46 };
@@ -173,8 +184,23 @@ export class WorldSystem {
       const a = sorted[i]; const b = sorted[i + 1];
       if (b - a < 0.05) continue;
       const mid = (a + b) * 0.5;
-      const opening = openings.find((item) => mid > item.from && mid < item.to);
-      const bands = opening ? [[y0, opening.y0 ?? y0], [opening.y1 ?? y1, y1]] : [[y0, y1]];
+      // A segment can be crossed by several openings at different heights — a
+      // ground doorway and an upper firing gallery, for instance. Taking only
+      // the first match silently filled in every opening above the lowest one,
+      // which is why the depot mezzanine and the bureau's upper storey measured
+      // as sealed boxes despite having galleries authored into them.
+      const crossing = openings
+        .filter((item) => mid > item.from && mid < item.to)
+        .map((item) => [Math.max(y0, item.y0 ?? y0), Math.min(y1, item.y1 ?? y1)])
+        .filter(([low, high]) => high > low)
+        .sort((left, right) => left[0] - right[0]);
+      const bands = [];
+      let cursor = y0;
+      for (const [low, high] of crossing) {
+        if (low > cursor) bands.push([cursor, low]);
+        cursor = Math.max(cursor, high);
+      }
+      bands.push([cursor, y1]);
       for (const [ba, bb] of bands) {
         if (bb - ba < 0.05) continue;
         const size = axis === 'x' ? [b - a, bb - ba, thickness] : [thickness, bb - ba, b - a];
@@ -421,6 +447,23 @@ export class WorldSystem {
     this.batchKey = 'market';
   }
 
+  // Nudge decoration out of a doorway or window. Trim and pipes are mesh-only:
+  // left in an opening they stop the player's bullets and sight while the AI's
+  // collider ray passes through, which reads as the gun not working.
+  clearOfOpenings(b, z, margin = 0.55) {
+    if (!b.openings) return z;
+    for (const opening of b.openings) {
+      if (z < opening.from - margin || z > opening.to + margin) continue;
+      const below = opening.from - margin - 0.25;
+      const above = opening.to + margin + 0.25;
+      const inside = (value) => value > b.z - b.d * 0.5 + 0.3 && value < b.z + b.d * 0.5 - 0.3;
+      if (inside(above)) return above;
+      if (inside(below)) return below;
+      return above;
+    }
+    return z;
+  }
+
   buildInteriorShop() {
     const plaster = this.materials.get('plasterWarm'); const tile = this.materials.get('tile'); const wood = this.materials.get('wood'); const metal = this.materials.get('metal');
     const teaLabel = this.materials.createSign('TEA', '#3f2d21', '#e7d39d');
@@ -493,6 +536,45 @@ export class WorldSystem {
         const side = b.x < 0 ? 'west-yard' : 'east-terrace';
         this.transition(`${side}-underpass`, 'market', side, b.x, (gapMin + gapMax) * 0.5);
         this.coverPoints.push([b.x + (b.x < 0 ? -3.4 : 3.4), gapMin - 1.6]);
+      } else if (b.openings) {
+        // Same mass as the plain box, built as a wall run so it can carry
+        // openings. Footprint, height and material are unchanged.
+        this.wallRun({
+          axis: 'z', fixed: b.x, from: b.z - b.d * 0.5, to: b.z + b.d * 0.5, y1: b.h,
+          material, surface, thickness: b.w, openings: b.openings,
+        });
+        for (const opening of b.openings) {
+          const mid = (opening.from + opening.to) * 0.5;
+          if (!opening.breach) {
+            // Sill and lintel so a punched hole reads as a window, not a gap.
+            this.box([b.w + 0.16, 0.16, opening.to - opening.from + 0.3], [b.x, opening.y0 - 0.08, mid], this.materials.get('concrete'), { surface: 'concrete' });
+            this.box([b.w + 0.16, 0.18, opening.to - opening.from + 0.3], [b.x, opening.y1 + 0.09, mid], this.materials.get('concrete'), { surface: 'concrete' });
+            continue;
+          }
+          this.surfaceRect(b.x - b.w * 0.5, b.x + b.w * 0.5, opening.from, opening.to, 'concrete');
+          this.box([b.w + 0.2, 0.08, opening.to - opening.from], [b.x, 0.04, mid], this.materials.get('concrete'), { surface: 'concrete' });
+          // Rubble shoulders sit just outside each mouth. The mouths are the two
+          // x faces of the wall, so these offset along x; offsetting along z put
+          // them inside the solid flanks, where they were invisible and useless.
+          // Flank each mouth without narrowing it. These sit outside the wall in x
+          // and outside the opening in z, so they give an approaching player
+          // something to break line of sight against while the bore stays a clean
+          // 3 m. Placed in the bore they became a chicane and pathing through the
+          // breach collapsed.
+          for (const side of [-1, 1]) {
+            const x = b.x + side * (b.w * 0.5 + 0.7);
+            for (const z of [opening.from - 1.0, opening.to + 1.0]) {
+              this.box([1.4, 0.9, 1.1], [x, 0.45, z], this.materials.get('concrete'), { collision: true, surface: 'concrete' });
+              this.coverPoints.push([x, z]);
+            }
+          }
+          this.emitter(b.x, opening.y1 - 0.4, mid, 0xffc07a, 2.2, 8, 2);
+          if (opening.transition) {
+            const [id, target] = opening.transition;
+            this.transition(id, 'market', target, b.x, mid);
+          }
+          this.coverPoints.push([b.x + 3.6, mid], [b.x - 3.6, mid]);
+        }
       } else {
         this.box([b.w, b.h, b.d], [b.x, b.h * 0.5, b.z], material, { collision: true, surface });
       }
@@ -501,7 +583,10 @@ export class WorldSystem {
       for (let floor = 1; floor < Math.floor(b.h / 2.15); floor += 1) {
         for (let dz = -3.1; dz <= 3.2; dz += 2.15) {
           const cell = Math.round((dz + 3.1) / 2.15); const lit = (index * 7 + floor * 3 + cell) % 7 === 0;
-          const windowMaterial = lit ? warmWindow : darkWindow;
+          // Vary which interior a lit pane shows so a facade is not a stencil.
+          const windowMaterial = lit
+            ? this.materials.get(['warmWindow', 'warmWindow1', 'warmWindow2'][(index + floor * 2 + cell) % 3])
+            : darkWindow;
           const window = this.box([0.035, 0.92, 1.16], [facadeX, floor * 2.05 + 0.45, b.z + dz], windowMaterial, { surface: 'glass' });
           window.rotation.y = b.x < 0 ? 0 : Math.PI;
           if ((cell + floor + index) % 3 !== 0) this.box([0.06, 0.08, 1.34], [facadeX + (b.x < 0 ? 0.035 : -0.035), floor * 2.05 + 0.45, b.z + dz], frameMaterial, { surface: 'metal' });
@@ -518,8 +603,10 @@ export class WorldSystem {
       const doorZ = b.z + (index % 2 ? 2.2 : -2.1);
       this.box([0.05, 2.25, 1.15], [facadeX + facadeOffset * 0.035, 1.18, doorZ], this.materials.get(index % 3 === 0 ? 'rust' : 'darkGlass'), { surface: index % 3 === 0 ? 'metal' : 'glass' });
       this.box([0.12, 0.18, 1.5], [facadeX + facadeOffset * 0.09, 2.37, doorZ], this.materials.get('metal'), { surface: 'metal' });
-      const drain = this.cylinder(0.055, 0.065, Math.min(5.5, b.h - 0.4), [facadeX + facadeOffset * 0.16, Math.min(5.5, b.h - 0.4) * 0.5, b.z + b.d * 0.38], this.materials.get('rust'));
+      const drainZ = this.clearOfOpenings(b, b.z + b.d * 0.38);
+      const drain = this.cylinder(0.055, 0.065, Math.min(5.5, b.h - 0.4), [facadeX + facadeOffset * 0.16, Math.min(5.5, b.h - 0.4) * 0.5, drainZ], this.materials.get('rust'));
       drain.position.x = facadeX + facadeOffset * 0.16;
+      drain.position.z = drainZ;
       if (index % 2 === 0) this.addBalcony(facadeX, 3.15, b.z + 0.5, b.x < 0 ? 1 : -1);
       this.addRoofDetail(b.x, b.h, b.z, index);
       // The original block only detailed its street elevation, because nothing
@@ -529,9 +616,10 @@ export class WorldSystem {
       const rearX = b.x + rearSide * b.w * 0.5;
       this.facade({
         axis: 'z', fixed: rearX, from: b.z - b.d * 0.5, to: b.z + b.d * 0.5, y1: b.h, side: rearSide,
+        openings: b.openings,
         pilasterEvery: 3.4, windowY: 2.5, windowRows: Math.max(1, Math.floor((b.h - 3.4) / 2.3)), windowStep: 3.2,
       });
-      this.cylinder(0.06, 0.07, Math.min(5, b.h - 0.6), [rearX + rearSide * 0.34, Math.min(5, b.h - 0.6) * 0.5, b.z - b.d * 0.32], this.materials.get('rust'));
+      this.cylinder(0.06, 0.07, Math.min(5, b.h - 0.6), [rearX + rearSide * 0.34, Math.min(5, b.h - 0.6) * 0.5, this.clearOfOpenings(b, b.z - b.d * 0.32)], this.materials.get('rust'));
     }
     const archMat = this.materials.get('brick');
     this.box([3.1, 5.4, 2.0], [-5.2, 2.7, -19.5], archMat, { collision: true, surface: 'brick' });
@@ -774,20 +862,21 @@ export class WorldSystem {
       axis: 'z', fixed: maxX, from: minZ, to: maxZ, y1: wallH, material: concrete,
       openings: [
         { from: -4, to: 2, y0: 0, y1: 3.4 },
-        // Loading slot at mezzanine height. Without a real hole the upper level
-        // is a sealed box: nothing can see or shoot out of it, which is why the
-        // depot saw almost no combat.
-        { from: -8, to: -1, y0: 4.1, y1: 5.6 },
+        // Loading gallery. A narrow slot measured a 2.3% open arc from the
+        // mezzanine eye position — effectively a sealed box. This is long
+        // enough to actually overlook the yard, with a waist-high sill left
+        // below it so the position still has cover.
+        { from: -9.5, to: 10, y0: 4.35, y1: 6.2 },
       ],
     });
-    this.wallRun({ axis: 'x', fixed: minZ, from: minX, to: maxX, y1: wallH, material: concrete, openings: [{ from: -37, to: -31, y0: 0, y1: 3.4 }, { from: -42, to: -38, y0: 4.1, y1: 5.6 }] });
+    this.wallRun({ axis: 'x', fixed: minZ, from: minX, to: maxX, y1: wallH, material: concrete, openings: [{ from: -37, to: -31, y0: 0, y1: 3.4 }, { from: -43, to: -31, y0: 4.35, y1: 6.2 }] });
     this.wallRun({ axis: 'x', fixed: maxZ, from: minX, to: maxX, y1: wallH, material: concrete, openings: [{ from: -40, to: -35, y0: 0, y1: 3.4 }, { from: -36.4, to: -33.6, y0: 3.5, y1: 5.8 }] });
     this.box([maxX - minX + 1, 0.4, maxZ - minZ + 1], [(minX + maxX) * 0.5, wallH + 0.2, (minZ + maxZ) * 0.5], metal, { surface: 'metal' });
     // A twenty-metre blank slab reads as filler next to the market facades, so
     // the depot shell gets an industrial read: ribbed cladding, pilasters, a
     // clerestory window band and a parapet.
-    const depotEast = [{ from: -4, to: 2, y0: 0, y1: 3.4 }, { from: -8, to: -1, y0: 4.1, y1: 5.6 }];
-    const depotNorth = [{ from: -37, to: -31, y0: 0, y1: 3.4 }, { from: -42, to: -38, y0: 4.1, y1: 5.6 }];
+    const depotEast = [{ from: -4, to: 2, y0: 0, y1: 3.4 }, { from: -9.5, to: 10, y0: 4.35, y1: 6.2 }];
+    const depotNorth = [{ from: -37, to: -31, y0: 0, y1: 3.4 }, { from: -43, to: -31, y0: 4.35, y1: 6.2 }];
     const depotSouth = [{ from: -40, to: -35, y0: 0, y1: 3.4 }, { from: -36.4, to: -33.6, y0: 3.5, y1: 5.8 }];
     this.facade({ axis: 'z', fixed: maxX, from: minZ, to: maxZ, y1: wallH, side: 1, pilasterEvery: 4, ribbed: true, windowY: 6.2, windowRows: 1, windowStep: 3.6, openings: depotEast });
     this.facade({ axis: 'z', fixed: minX, from: minZ, to: maxZ, y1: wallH, side: -1, pilasterEvery: 4, ribbed: true, windowY: 6.2, windowRows: 1, windowStep: 3.6 });
@@ -850,6 +939,11 @@ export class WorldSystem {
     this.stairs({ x: 20, z: -16.6, toY: lowY, run: 3.6, width: 4.2, axis: 'z', direction: 1, material: concrete, surface: 'concrete' });
     this.stairs({ x: 28, z: 20.6, toY: lowY, run: 3.6, width: 4.2, axis: 'z', direction: -1, material: concrete, surface: 'concrete' });
     this.stairs({ x: 13.6, z: -2.5, toY: lowY, run: 3.4, width: 3.4, axis: 'x', direction: 1, material: concrete, surface: 'concrete' });
+    // The deck used to be reachable from the market only at z -2.5, the same z as
+    // the underpass, so one funnel owned every crossing. A northern flight gives
+    // the deck a second approach and makes the elevation contestable.
+    this.stairs({ x: 13.6, z: 11.5, toY: lowY, run: 3.4, width: 3.4, axis: 'x', direction: 1, material: concrete, surface: 'concrete' });
+    this.transition('east-terrace-north-steps', 'market', 'east-terrace', 14.5, 11.5);
     this.stairs({ x: 30.8, z: 8, fromY: lowY, toY: highY, run: 3.2, width: 3.6, axis: 'x', direction: 1, material: concrete, surface: 'concrete' });
     this.stairs({ x: 30.8, z: -4, fromY: lowY, toY: highY, run: 3.2, width: 3.6, axis: 'x', direction: 1, material: concrete, surface: 'concrete' });
     // Planters and a pergola give cover on the open terrace.
@@ -893,16 +987,16 @@ export class WorldSystem {
     const minX = 19; const maxX = 30; const minZ = -8; const maxZ = 12; const floorY = 1.5; const upperY = 5.0; const roofY = 8.4;
     this.surfaceRect(minX, maxX, minZ, maxZ, 'tile');
     // The bureau block stands on the low terrace, so its ground floor is level 1.
-    this.wallRun({ axis: 'z', fixed: minX, from: minZ, to: maxZ, y0: floorY, y1: roofY, material: plaster, thickness: 0.4, openings: [{ from: -1, to: 3, y0: floorY, y1: floorY + 2.5 }, { from: -7, to: -2, y0: upperY + 0.4, y1: upperY + 1.9 }, { from: 5, to: 11, y0: upperY + 0.4, y1: upperY + 1.9 }] });
-    this.wallRun({ axis: 'z', fixed: maxX, from: minZ, to: maxZ, y0: floorY, y1: roofY, material: plaster, thickness: 0.4, openings: [{ from: 4, to: 8, y0: floorY, y1: floorY + 2.5 }, { from: -6, to: -1, y0: upperY + 0.4, y1: upperY + 1.9 }] });
-    this.wallRun({ axis: 'x', fixed: minZ, from: minX, to: maxX, y0: floorY, y1: roofY, material: plaster, thickness: 0.4, openings: [{ from: 23, to: 27, y0: floorY, y1: floorY + 2.5 }, { from: 20, to: 22.5, y0: upperY + 0.4, y1: upperY + 1.9 }, { from: 27.5, to: 29.5, y0: upperY + 0.4, y1: upperY + 1.9 }] });
+    this.wallRun({ axis: 'z', fixed: minX, from: minZ, to: maxZ, y0: floorY, y1: roofY, material: plaster, thickness: 0.4, openings: [{ from: -1, to: 3, y0: floorY, y1: floorY + 2.5 }, { from: -7, to: -3.5, y0: floorY + 0.9, y1: floorY + 2.1 }, { from: -7, to: 11.5, y0: upperY + 0.85, y1: upperY + 2.5 }] });
+    this.wallRun({ axis: 'z', fixed: maxX, from: minZ, to: maxZ, y0: floorY, y1: roofY, material: plaster, thickness: 0.4, openings: [{ from: 4, to: 8, y0: floorY, y1: floorY + 2.5 }, { from: -7.5, to: 11.5, y0: upperY + 0.85, y1: upperY + 2.5 }] });
+    this.wallRun({ axis: 'x', fixed: minZ, from: minX, to: maxX, y0: floorY, y1: roofY, material: plaster, thickness: 0.4, openings: [{ from: 23, to: 27, y0: floorY, y1: floorY + 2.5 }, { from: 19.5, to: 29.5, y0: upperY + 0.85, y1: upperY + 2.5 }] });
     this.wallRun({ axis: 'x', fixed: maxZ, from: minX, to: maxX, y0: floorY, y1: roofY, material: plaster, thickness: 0.4, openings: [{ from: 21, to: 25, y0: floorY, y1: floorY + 2.5 }] });
     this.box([maxX - minX, 0.36, maxZ - minZ], [(minX + maxX) * 0.5, roofY + 0.18, (minZ + maxZ) * 0.5], plaster, { surface: 'plaster' });
     // Two glazed office storeys rather than a blue box: window bands on every
     // elevation, pilasters and a parapet, matching the market's facade language.
-    const westOpen = [{ from: -1, to: 3, y0: floorY, y1: floorY + 2.5 }, { from: -7, to: -2, y0: upperY + 0.4, y1: upperY + 1.9 }, { from: 5, to: 11, y0: upperY + 0.4, y1: upperY + 1.9 }];
-    const eastOpen = [{ from: 4, to: 8, y0: floorY, y1: floorY + 2.5 }, { from: -6, to: -1, y0: upperY + 0.4, y1: upperY + 1.9 }];
-    const southOpen = [{ from: 23, to: 27, y0: floorY, y1: floorY + 2.5 }, { from: 20, to: 22.5, y0: upperY + 0.4, y1: upperY + 1.9 }, { from: 27.5, to: 29.5, y0: upperY + 0.4, y1: upperY + 1.9 }];
+    const westOpen = [{ from: -1, to: 3, y0: floorY, y1: floorY + 2.5 }, { from: -7, to: 11.5, y0: upperY + 0.85, y1: upperY + 2.5 }];
+    const eastOpen = [{ from: 4, to: 8, y0: floorY, y1: floorY + 2.5 }, { from: -7.5, to: 11.5, y0: upperY + 0.85, y1: upperY + 2.5 }];
+    const southOpen = [{ from: 23, to: 27, y0: floorY, y1: floorY + 2.5 }, { from: 19.5, to: 29.5, y0: upperY + 0.85, y1: upperY + 2.5 }];
     const northOpen = [{ from: 21, to: 25, y0: floorY, y1: floorY + 2.5 }];
     this.facade({ axis: 'z', fixed: minX, from: minZ, to: maxZ, y0: floorY, y1: roofY, side: -1, pilasterEvery: 4, windowY: floorY + 1.5, windowRows: 2, windowStep: 3.1, openings: westOpen });
     this.facade({ axis: 'z', fixed: maxX, from: minZ, to: maxZ, y0: floorY, y1: roofY, side: 1, pilasterEvery: 4, windowY: floorY + 1.5, windowRows: 2, windowStep: 3.1, openings: eastOpen });
@@ -929,6 +1023,14 @@ export class WorldSystem {
     this.stairs({ x: 28, z: -6.4, fromY: floorY, toY: upperY, run: 4.4, width: 2.6, axis: 'z', direction: 1, material: tile, surface: 'tile' });
     this.stairs({ x: 21.5, z: 10.6, fromY: floorY, toY: upperY, run: 4.4, width: 2.6, axis: 'z', direction: -1, material: tile, surface: 'tile' });
     // Furniture breaks up both floors so the interior is not an empty shell.
+    for (const x of [21.5, 24.5, 27.5]) {
+      this.box([0.3, 2.5, 0.3], [x, upperY + 1.65, minZ], plaster, { surface: 'plaster', cast: false });
+      this.box([0.3, 2.5, 0.3], [x, upperY + 1.65, maxZ], plaster, { surface: 'plaster', cast: false });
+    }
+    for (const z of [-4, 2, 8]) {
+      this.box([0.3, 2.5, 0.3], [minX, upperY + 1.65, z], plaster, { surface: 'plaster', cast: false });
+      this.box([0.3, 2.5, 0.3], [maxX, upperY + 1.65, z], plaster, { surface: 'plaster', cast: false });
+    }
     for (const [x, z] of [[22, -5], [27, -2], [26, -6], [22, 9.5], [27, 9.5]]) {
       this.box([2.0, 0.75, 1.0], [x, upperY + 0.38, z], wood, { collision: true, surface: 'wood', minY: upperY });
       this.coverPoints.push([x, z]);
@@ -1275,6 +1377,24 @@ export class WorldSystem {
     }
     // A coarse lookup grid turns "closest nav node to this actor" into a local
     // scan rather than a walk over every node, every time a bot repaths.
+    // Overlook value per node: the fraction of directions with a long clear
+    // line from standing eye height. Goal selection uses this to prefer
+    // positions that can actually see the map, rather than treating every
+    // elevated node as equally valuable.
+    const fanOrigin = { x: 0, y: 0, z: 0 };
+    const fanDir = { x: 0, y: 0, z: 0 };
+    for (const node of nodes) {
+      if (!reachable.has(node.id)) { node.overlook = 0; continue; }
+      let open = 0;
+      for (let i = 0; i < 8; i += 1) {
+        const angle = (i / 8) * Math.PI * 2;
+        fanOrigin.x = node.x; fanOrigin.y = node.y + 1.7; fanOrigin.z = node.z;
+        fanDir.x = -Math.sin(angle); fanDir.y = 0; fanDir.z = -Math.cos(angle);
+        const hit = this.raycastForOverlook(fanOrigin, fanDir, 30);
+        if (hit >= 22) open += 1;
+      }
+      node.overlook = open / 8;
+    }
     this.navLookup = new Map();
     for (const node of nodes) {
       if (!reachable.has(node.id)) continue;
@@ -1282,6 +1402,27 @@ export class WorldSystem {
       if (!this.navLookup.has(key)) this.navLookup.set(key, []);
       this.navLookup.get(key).push(node.id);
     }
+  }
+
+  // Minimal ray test against the collider grid, used only while baking overlook
+  // values at build time (physics is not constructed yet at this point).
+  raycastForOverlook(origin, direction, maxDistance) {
+    this.overlookScratch ??= [];
+    this.queryRayColliders(origin.x, origin.z, direction.x, direction.z, maxDistance, this.overlookScratch);
+    let nearest = maxDistance;
+    for (const box of this.overlookScratch) {
+      const minY = box.minY ?? 0; const maxY = box.maxY ?? box.height;
+      if (origin.y < minY || origin.y > maxY) continue;
+      let tMin = 0.05; let tMax = nearest;
+      for (const [o, d, lo, hi] of [[origin.x, direction.x, box.minX, box.maxX], [origin.z, direction.z, box.minZ, box.maxZ]]) {
+        if (Math.abs(d) < 1e-8) { if (o < lo || o > hi) { tMin = Infinity; break; } continue; }
+        let entry = (lo - o) / d; let exit = (hi - o) / d;
+        if (entry > exit) { const swap = entry; entry = exit; exit = swap; }
+        tMin = Math.max(tMin, entry); tMax = Math.min(tMax, exit);
+      }
+      if (tMin <= tMax && tMin < nearest) nearest = tMin;
+    }
+    return nearest;
   }
 
   nearestNavNode(x, y, z) {

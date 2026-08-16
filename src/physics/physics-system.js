@@ -56,6 +56,12 @@ export class PhysicsSystem {
     return this.findWorldIntersection(origin, direction, maxDistance) ? this.worldRayDistance : null;
   }
 
+  // Which solid blocked the ray. Diagnostics only: it lets a harness run attribute
+  // lost sightlines to specific geometry instead of guessing from the source.
+  raycastWorldBlocker(origin, direction, maxDistance = 100) {
+    return this.findWorldIntersection(origin, direction, maxDistance) ? this.worldRayCollider : null;
+  }
+
   // The district holds thousands of solids, so a linear scan per probe is not
   // viable with twelve combatants. Walk the world broadphase grid along the ray
   // and stop as soon as a hit is closer than the next cell boundary.
