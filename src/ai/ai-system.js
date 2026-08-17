@@ -857,7 +857,23 @@ export class AISystem {
   // numbers close the gap to roughly 3x, which still leaves the player clearly
   // the strongest actor on the field.
   fireAt(bot, targetPosition, distance, ctx) {
-    const accuracy = THREE.MathUtils.clamp(0.68 - distance * 0.011, 0.18, 0.54);
+    // Bot marksmanship. The two combat models were effectively unrelated: the
+    // player fires continuous deterministic hitscan at ~11 shots/s with
+    // player-controlled aim, while a bot rolled a capped die at ~3.3 effective
+    // shots/s. Worse, nothing about the target's state entered the roll, so
+    // moving, crouching and using cover changed a bot's hit chance by exactly
+    // nothing - the player had no way to influence incoming fire except by
+    // breaking line of sight entirely.
+    //
+    // Damage is deliberately unchanged. What changes is that a target's own
+    // behaviour now matters: an exposed, stationary target is genuinely easy to
+    // hit, and a moving or crouched one is genuinely harder.
+    const targetSpeed = this.targetSpeedOf(bot);
+    const targetCrouched = this.targetCrouchedOf(bot);
+    // 0 at rest, 1 at a full sprint.
+    const evasion = THREE.MathUtils.clamp(targetSpeed / 5.2, 0, 1);
+    const marksmanship = 0.78 - distance * 0.011 - evasion * 0.3 - (targetCrouched ? 0.08 : 0);
+    const accuracy = THREE.MathUtils.clamp(marksmanship, 0.14, 0.66);
     const hit = this.rng.next() < accuracy;
     this.target.set(targetPosition.x, targetPosition.y + targetPosition.eye, targetPosition.z);
     const end = this.target.clone();
@@ -965,6 +981,22 @@ export class AISystem {
       actorType: 'enemy', actorId: bot.id, team: bot.team, source, hitZone,
       position: { x: bot.root.position.x, y: bot.root.position.y, z: bot.root.position.z },
     });
+  }
+
+  // How fast this bot's current target is moving, and whether it is crouched.
+  // Both feed marksmanship: a target that is doing something to avoid being shot
+  // should be harder to shoot.
+  targetSpeedOf(bot) {
+    if (bot.targetId === 'player') {
+      const player = this.ctx.peek('player');
+      return player ? Math.hypot(player.velocity.x, player.velocity.z) : 0;
+    }
+    return this.byId.get(bot.targetId)?.speed ?? 0;
+  }
+
+  targetCrouchedOf(bot) {
+    if (bot.targetId !== 'player') return false;
+    return this.ctx.peek('player')?.stance === 'crouch';
   }
 
   // Knock the target away from whoever shot it, scaled by the damage. Headshots
@@ -1099,7 +1131,11 @@ export class AISystem {
       if (bot.fireCooldown <= 0 && distance < FIRE_RANGE) {
         if (bot.burst <= 0) { bot.burst = 3 + Math.floor(this.rng.next() * 3); }
         bot.burst -= 1;
-        bot.fireCooldown = bot.burst > 0 ? 0.12 : 0.55 + this.rng.range(0.15, 0.6);
+        // Inter-burst pause was up to 1.15 s against 0.36 s of firing, so a bot
+        // spent roughly 70% of an engagement silent. Shortened so sustained
+        // contact is actually sustained; the burst structure itself is kept,
+        // because it is what makes several bots readable as separate shooters.
+        bot.fireCooldown = bot.burst > 0 ? 0.12 : 0.32 + this.rng.range(0.1, 0.3);
         this.fireAt(bot, target, distance, ctx);
       }
       return;

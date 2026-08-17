@@ -237,6 +237,153 @@ export class Engine {
       crouch: 'crouch',
       jump: 'jump',
     };
+    // Duel benchmark. Measures how long a bot needs to kill the player under
+    // controlled conditions, and how long the player needs to kill a bot, using
+    // production combat on both sides. Kept deliberately separate from the
+    // scripted-human soak: this measures the combat MODEL, not how well a
+    // scripted driver plays.
+    if (name === 'measure_duel') {
+      const ai = this.ctx.get('ai');
+      const player = this.ctx.get('player');
+      const input = this.ctx.input;
+      this.setPaused(false);
+      this.ctx.peek('match')?.forceStart();
+      input.clearVirtual();
+
+      const range = Number(options.range ?? 5);
+      const mode = String(options.mode ?? 'stationary');
+      const bot = ai.stageCharacter(this.ctx);
+      if (!bot) return this.snapshot();
+      // Put the player at the requested range, facing the bot.
+      player.stageHarnessPose({ position: [0, 0, range], yaw: 0, pitch: 0, eyeHeight: 1.7, stance: mode === 'crouch' ? 'crouch' : 'stand' });
+      this.ctx.peek('match')?.clearProtection();
+      bot.stationary = true;
+      bot.targetId = 'player';
+      bot.state = 'engage';
+      bot.hasLos = true;
+      bot.lastSeenAge = 0;
+      bot.lastSeen.copy(player.position);
+      bot.fireCooldown = 0;
+      player.health = 100;
+      player.dead = false;
+
+      const maxFrames = Math.max(60, Math.floor(Number(options.frames) || 900));
+      let frames = 0;
+      let losBrokenAt = null;
+      while (frames < maxFrames && player.health > 0 && !player.dead) {
+        // Target behaviour under test.
+        if (mode === 'moving') {
+          input.setVirtual('left', (Math.floor(frames / 26) % 2) === 0);
+          input.setVirtual('right', (Math.floor(frames / 26) % 2) === 1);
+        } else if (mode === 'breaking-los' && frames === 30) {
+          // Step out of the engagement entirely.
+          player.position.set(0, 0, range + 40);
+          losBrokenAt = frames;
+        }
+        this.stepFrames(1);
+        frames += 1;
+      }
+      input.clearVirtual();
+      const botTtk = player.health <= 0 || player.dead ? Number((frames / 60).toFixed(2)) : null;
+      const healthLeft = Math.max(0, Math.round(player.health));
+
+      // Player side: perfect aim held on a bot, production weapon path.
+      const weapons = this.ctx.get('weapons');
+      const target = ai.stageCharacter(this.ctx);
+      player.stageHarnessPose({ position: [0, 0, range], yaw: 0, pitch: 0, eyeHeight: 1.7, stance: 'stand' });
+      target.stationary = true; target.health = 100; target.alive = true;
+      weapons.resetLoadout?.();
+      player.health = 100; player.dead = false;
+      this.stepFrames(2);
+      player.aimAtPoint({ x: target.root.position.x, y: target.root.position.y + 1.2, z: target.root.position.z });
+      let shotFrames = 0;
+      input.setVirtual('fire', true);
+      while (shotFrames < 300 && target.alive) { this.stepFrames(1); shotFrames += 1; }
+      input.setVirtual('fire', false);
+      const playerTtk = target.alive ? null : Number((shotFrames / 60).toFixed(2));
+
+      input.clearVirtual();
+      this.setPaused(true);
+      return {
+        ...this.snapshot(),
+        duel: { mode, range, botTtk, playerTtk, healthLeft, losBrokenAt, framesRun: frames },
+      };
+    }
+
+    // Recoil verification. Fires a controlled magazine through the real input and
+    // weapon path - nothing writes pitch directly - and samples the player's
+    // actual aim alongside the viewmodel's own recoil state, so the two can be
+    // checked for disagreement. Reports its own diagnostics (ammo, shots,
+    // paused) so a run that fails to fire is visible rather than silently
+    // reporting zero displacement.
+    if (name === 'measure_recoil') {
+      const player = this.ctx.get('player');
+      const weapons = this.ctx.get('weapons');
+      const input = this.ctx.input;
+      this.setPaused(false);
+      this.ctx.peek('match')?.forceStart();
+      input.clearVirtual();
+      player.stageHarnessPose({ position: [0, 0, 6], yaw: 0, pitch: 0, eyeHeight: 1.7, stance: 'stand' });
+      weapons.resetLoadout?.();
+      this.stepFrames(4);
+
+      const deg = (radians) => Number((radians * 180 / Math.PI).toFixed(3));
+      const sample = () => ({
+        pitch: deg(player.pitch),
+        pending: deg(player.recoilPending ?? 0),
+        viewKick: deg(weapons.recoilKick ?? 0),
+        viewPitch: deg(weapons.recoilPitch ?? 0),
+      });
+
+      const startAmmo = weapons.ammo;
+      const initial = sample();
+      const series = [];
+      // Track the peak in radians and convert once; comparing a radian pitch
+      // against a value already converted to degrees froze the peak after frame 1.
+      let peakRad = player.pitch;
+      let peakFrame = 0;
+      const burst = [];
+
+      // Hold the trigger for a full magazine, one frame at a time.
+      input.setVirtual('fire', true);
+      let frame = 0;
+      const maxFrames = Math.max(1, Math.floor(Number(options.frames) || 200));
+      while (frame < maxFrames && weapons.ammo > 0 && !weapons.reloading) {
+        this.stepFrames(1);
+        frame += 1;
+        if (player.pitch > peakRad) { peakRad = player.pitch; peakFrame = frame; }
+        // Sample the climb during the burst, not just at its end.
+        if (frame === 6 || frame === 18 || frame === 36 || frame === 90) {
+          burst.push({ frame, round: startAmmo - weapons.ammo, ...sample() });
+        }
+      }
+      input.setVirtual('fire', false);
+      const firedFrames = frame;
+      const shotsFired = startAmmo - weapons.ammo;
+      const atRelease = sample();
+
+      // Recovery samples at fixed wall-clock offsets after the trigger releases.
+      const marks = [15, 30, 60, 120];   // 250 ms, 500 ms, 1 s, 2 s at 60 Hz
+      let stepped = 0;
+      for (const mark of marks) {
+        this.stepFrames(mark - stepped);
+        stepped = mark;
+        series.push({ msAfterRelease: Math.round((mark / 60) * 1000), ...sample() });
+      }
+      this.stepFrames(60);
+      const settled = sample();
+      input.clearVirtual();
+      this.setPaused(true);
+      return {
+        ...this.snapshot(),
+        recoil: {
+          startAmmo, shotsFired, firedFrames, peakFrame,
+          initial, peakPitch: deg(peakRad), burst, atRelease, series, settled,
+          residual: Number((settled.pitch - initial.pitch).toFixed(3)),
+        },
+      };
+    }
+
     // First-person weapon inspection. Every state is reached by driving the same
     // virtual inputs a player uses - no viewmodel pose is written directly - and
     // the engine is left paused so the captured frame is the staged frame.

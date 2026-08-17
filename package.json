@@ -23,7 +23,9 @@
     "harness:frame": "node tools/frame-profile.mjs",
     "gameplay:soak": "node tools/gameplay-soak.mjs",
     "gameplay:production": "node tools/gameplay-production.mjs",
-    "audio:load": "node tools/audio-load.mjs"
+    "audio:load": "node tools/audio-load.mjs",
+    "recoil:verify": "node tools/recoil-verify.mjs",
+    "duel:bench": "node tools/duel-benchmark.mjs"
   },
   "dependencies": {
     "three": "0.180.0"

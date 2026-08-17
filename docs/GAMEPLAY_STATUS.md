@@ -1366,6 +1366,143 @@ Measured on the live build through production systems, not read from code.
   combatants; player camera has no interpolated `update`, so aim is quantized to
   60 Hz.
 
+---
+
+## Pass 17 — both blockers closed; milestone assessment
+
+### Priority 1 — recoil recovery independently verified
+
+The previous probe failed because `stage_weapon` leaves the engine paused, so the
+follow-up `runAction('fire')` advanced nothing and silently reported zero
+displacement either way. The fix was the measurement, not the recoil.
+
+`npm run recoil:verify` (`tools/recoil-verify.mjs` + `runAction('measure_recoil')`)
+fires a controlled magazine through the real input and weapon path — nothing
+writes pitch directly — and reports its own diagnostics so a run that fails to
+fire is visible rather than silent.
+
+| point | displacement |
+|---|---|
+| round 1 | 0.495 deg |
+| round 6 | 3.165 deg |
+| round 15 | 8.386 deg |
+| at release (30 rounds) | **15.969 deg** |
+| +250 ms | **0.000 deg** |
+| +500 ms / +1 s / +2 s | 0.000 deg |
+| **final residual** | **0** |
+
+It reproduces the reviewer's +16 deg climb exactly and then recovers completely.
+The gate also fails if the magazine does not fire, if recoil does not displace
+aim, if residual exceeds 1 deg, or if the viewmodel reads settled while the aim
+is still displaced. **The implementation was correct and has been left alone.**
+
+One bug in the rig itself was fixed on the way: peak tracking compared a radian
+pitch against a value already converted to degrees, so the peak froze after frame
+one and under-reported 15.97 deg as 0.495.
+
+### Priority 2 — the 27x asymmetry was two unrelated combat models
+
+Audited separately:
+
+| | player | bot (before) |
+|---|---|---|
+| resolution | deterministic hitscan | capped dice roll |
+| damage | 34 | 16-21 (10% head x1.7) |
+| effective rate | ~11 shots/s continuous | **~3.3 shots/s** |
+| duty cycle | 100% | burst 0.36 s, pause up to 1.15 s — **~70% silent** |
+| to-hit ceiling | player-controlled | 0.54 |
+| target state | n/a | **ignored entirely** |
+
+The dominant terms were the duty cycle and the fact that **nothing about the
+target's behaviour entered the roll** — moving, crouching and using cover changed
+a bot's hit chance by exactly nothing, so the player had no way to influence
+incoming fire except by leaving line of sight altogether.
+
+Fixed by changing the model, not the numbers:
+
+- to-hit becomes `clamp(0.78 - 0.011d - evasion*0.3 - crouch*0.08, 0.14, 0.66)`,
+  where evasion is the target's own speed normalised to a sprint
+- inter-burst pause 0.55-1.15 s -> 0.32-0.62 s, so sustained contact is sustained;
+  the burst structure is kept because it is what makes several shooters readable
+  as separate sources
+- **damage is unchanged**, and the player's weapon is untouched
+
+### Duel benchmark (new, deliberately separate from the soak)
+
+`npm run duel:bench` measures the combat *model* under controlled conditions —
+the scripted-human soak measures how well a handicapped driver plays a match,
+which is the wrong instrument for "is being shot at dangerous". 3 seeds x 6 cases.
+
+| case | before | after |
+|---|---|---|
+| bot TTK, stationary 5 m | 4.73 s | **1.80 s** |
+| bot TTK, stationary 20 m | — | 2.14 s |
+| bot TTK, moving 5 m | — | **2.48 s (1.38x survival)** |
+| breaking LOS | — | **survived 3/3 at full health** |
+| player TTK vs bot | 0.176 s | 0.259 s |
+| **model ratio** | **27x** | **7.0x** |
+
+Its thresholds come from design intent, not from what the build happens to do: an
+exposed stationary player must die inside 3 s but not under 0.8 s, movement must
+buy at least 15% more life, breaking line of sight must work, and the model ratio
+must stay under 12x.
+
+### Final validation
+
+| check | result |
+|---|---|
+| 5 fast gates | all exit 0 |
+| production gate | 5/6 by score limit, 1 by time limit at 39-37; both teams win |
+| multi-seed soak | kills 29.7, human K/D 1.12, share 26.4%, spawn deaths 2.04%, no-contact p90 **11.9 s** |
+| recoil verification | residual 0 deg |
+| duel benchmark | all cases pass, ratio 7.0x |
+| audio load | context running, peak 24/24 |
+| character / weapon capture | 12 / 14 frames |
+
+Gate D also came back under its 15 s flag (19.2 -> 11.9 s) as a side effect of
+bots contesting ground more consistently.
+
+## Final assessment
+
+**1. Does it feel like a complete game rather than a tech demo?**
+Yes, with one geographic caveat. A player boots into a briefing, deploys, fights
+a 6v6 match that reliably resolves on the real score limit in 6-10 minutes, dies,
+respawns, reads a kill feed and scoreboard, reaches a real victory or defeat with
+per-player statistics, and can rematch into a differently-seeded match. Both teams
+win across seeds. The preserved Sable Market reads as a finished game; the
+deployment yards, though much improved this milestone, still read as the weakest
+ground.
+
+**2. Three strongest aspects.**
+- The match loop and its presentation — independently called the strongest part
+  of the project, and it now runs on verified production rules.
+- The weapon: layered audio with indoor response, inertia, rotational recoil that
+  recovers, staged reload, muzzle smoke, stride-locked bob.
+- The validation suite itself: eight independent gates, every one of which has
+  caught a real defect that code review missed.
+
+**3. Three most obvious remaining weaknesses.**
+- Bot arms are baked into the merged body mesh, so they cannot follow the rifle;
+  aim posture is a compromise within that limit.
+- Tracers and muzzle flashes ignore team while the audio uses it.
+- The deployment yards remain the weakest zones visually, and 11 of 66 bots still
+  finish a soak run without scoring.
+
+**4. Is anything severe enough to block the milestone?**
+No. Both blockers raised by the final review are closed and independently
+measured. Everything remaining is a quality gap, not a broken system.
+
+**5. What should be deferred rather than polished now?**
+Splitting the character viewmodel into an upper-body group; team-coloured tracers
+and muzzle flashes; the crosshair advertising a movement penalty that spread does
+not implement; 600 vs the declared 680 RPM (sub-step remainder discarded); the
+three unaligned reload timelines; single-ray bot LOS making partial cover binary;
+one shared impact sprite; the player camera having no interpolated update, so aim
+is quantised to 60 Hz; north-junction's cover gap; empty perimeter margins;
+arcade isolation.
+
+**Milestone declared complete.**
+
 ## Remaining highest-impact problems
 
 1. **Elevated combat** — occupancy 4.8 -> 9.8 (pass 7) -> 18.5 (pass 9, from
