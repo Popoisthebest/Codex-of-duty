@@ -41,8 +41,13 @@ engine
   .register(new UISystem())
   .register(new AudioSystem());
 
+// Every match used to start from seed 1337, so boot and every rematch replayed
+// the same opening deployment and the same bot decision stream. The harness
+// still pins its own seeds; only real play draws a fresh one.
+const playSeed = () => (Math.floor(Math.random() * 0x7fffffff) || 1337);
+
 await engine.init();
-await engine.reset({ seed: 1337, scenario: 'default', render: false });
+await engine.reset({ seed: playSeed(), scenario: 'default', render: false });
 if (!engine.ctx.harness.active) engine.setPaused(true);
 const pauseOff = engine.ctx.events.on('game:pause-changed', ({ paused }) => {
   if (!engine.ctx.harness.active) engine.setPaused(paused);
@@ -50,7 +55,7 @@ const pauseOff = engine.ctx.events.on('game:pause-changed', ({ paused }) => {
 const restartOff = engine.ctx.events.on('game:restart-request', async () => {
   if (engine.ctx.harness.active) return;
   engine.setPaused(true);
-  await engine.reset({ seed: 1337, scenario: 'default', render: false });
+  await engine.reset({ seed: playSeed(), scenario: 'default', render: false });
   engine.setPaused(document.pointerLockElement !== canvas);
   engine.start();
 });

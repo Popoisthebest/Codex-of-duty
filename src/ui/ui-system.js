@@ -395,6 +395,11 @@ export class UISystem {
   }
 
   announce(text, sub, tone) {
+    // Announcements were visual only. Emitting them lets audio sting them too,
+    // without the audio system re-deriving lead state from scores.
+    this.ctx?.events?.emit('match:announce', {
+      kind: text === 'MATCH POINT' ? 'match-point' : 'lead-change', text, tone,
+    });
     const key = `${text}:${sub}`;
     if (key === this.announceKey && this.announceTimer > 0) return;
     this.announceKey = key;

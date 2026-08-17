@@ -200,28 +200,28 @@ export class AISystem {
     const at = (x, y, z, rx = 0, ry = 0, rz = 0) => new THREE.Matrix4()
       .compose(new THREE.Vector3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, ry, rz)), new THREE.Vector3(1, 1, 1));
 
-    push(new THREE.CapsuleGeometry(0.27, 0.55, 5, 10), 'uniform', 'torso', 'fabric', at(0, 1.1, 0));
-    push(new THREE.BoxGeometry(0.55, 0.58, 0.28, 2, 2, 1), 'vest', 'torso', 'fabric', at(0, 1.15, -0.12));
+    push(new THREE.CapsuleGeometry(0.27, 0.55, 5, 10), 'uniform', 'torso', 'flesh', at(0, 1.1, 0));
+    push(new THREE.BoxGeometry(0.55, 0.58, 0.28, 2, 2, 1), 'vest', 'torso', 'flesh', at(0, 1.15, -0.12));
     push(new THREE.SphereGeometry(0.2, 14, 10), 'skin', 'head', 'flesh', at(0, 1.74, 0));
     push(new THREE.CylinderGeometry(0.105, 0.12, 0.18, 10), 'skin', 'head', 'flesh', at(0, 1.55, 0));
-    push(new THREE.SphereGeometry(0.225, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.55), 'vest', 'head', 'metal', at(0, 1.79, 0));
-    push(new THREE.BoxGeometry(0.22, 0.12, 0.06), 'vest', 'head', 'metal', at(0, 1.66, -0.18));
-    push(new THREE.CylinderGeometry(0.25, 0.25, 0.045, 16), 'vest', 'head', 'metal', at(0, 1.82, -0.01));
+    push(new THREE.SphereGeometry(0.225, 14, 8, 0, Math.PI * 2, 0, Math.PI * 0.55), 'vest', 'head', 'flesh', at(0, 1.79, 0));
+    push(new THREE.BoxGeometry(0.22, 0.12, 0.06), 'vest', 'head', 'flesh', at(0, 1.66, -0.18));
+    push(new THREE.CylinderGeometry(0.25, 0.25, 0.045, 16), 'vest', 'head', 'flesh', at(0, 1.82, -0.01));
     // Helmet stripe and shoulder bands in team colour.
-    push(new THREE.BoxGeometry(0.075, 0.055, 0.42), 'marker', 'head', 'metal', at(0, 1.9, 0));
-    push(new THREE.BoxGeometry(0.16, 0.075, 0.3), 'marker', 'torso', 'fabric', at(0, 1.38, 0.16));
-    push(new THREE.BoxGeometry(0.28, 0.08, 0.05), 'visor', 'head', 'glass', at(0, 1.77, -0.18));
-    push(new THREE.BoxGeometry(0.28, 0.075, 0.04), 'lens', 'head', 'glass', at(0, 1.77, -0.215));
-    push(new THREE.BoxGeometry(0.42, 0.55, 0.2, 2, 2, 1), 'gear', 'torso', 'fabric', at(0, 1.12, 0.28));
-    push(new THREE.BoxGeometry(0.5, 0.1, 0.28), 'gear', 'torso', 'fabric', at(0, 0.82, 0));
-    for (let p = -1; p <= 1; p += 1) push(new THREE.BoxGeometry(0.14, 0.2, 0.09), 'gear', 'torso', 'fabric', at(p * 0.16, 1.03, -0.29));
+    push(new THREE.BoxGeometry(0.075, 0.055, 0.42), 'marker', 'head', 'flesh', at(0, 1.9, 0));
+    push(new THREE.BoxGeometry(0.16, 0.075, 0.3), 'marker', 'torso', 'flesh', at(0, 1.38, 0.16));
+    push(new THREE.BoxGeometry(0.28, 0.08, 0.05), 'visor', 'head', 'flesh', at(0, 1.77, -0.18));
+    push(new THREE.BoxGeometry(0.28, 0.075, 0.04), 'lens', 'head', 'flesh', at(0, 1.77, -0.215));
+    push(new THREE.BoxGeometry(0.42, 0.55, 0.2, 2, 2, 1), 'gear', 'torso', 'flesh', at(0, 1.12, 0.28));
+    push(new THREE.BoxGeometry(0.5, 0.1, 0.28), 'gear', 'torso', 'flesh', at(0, 0.82, 0));
+    for (let p = -1; p <= 1; p += 1) push(new THREE.BoxGeometry(0.14, 0.2, 0.09), 'gear', 'torso', 'flesh', at(p * 0.16, 1.03, -0.29));
     for (const x of [-0.31, 0.31]) {
-      push(new THREE.BoxGeometry(0.2, 0.2, 0.26, 2, 2, 2), 'vest', 'limb', 'fabric', at(x, 1.39, -0.02, 0, 0, x < 0 ? -0.18 : 0.18));
-      push(new THREE.BoxGeometry(0.215, 0.07, 0.275), 'marker', 'limb', 'fabric', at(x, 1.46, -0.02, 0, 0, x < 0 ? -0.18 : 0.18));
-      push(new THREE.CapsuleGeometry(0.085, 0.24, 4, 8), 'uniform', 'limb', 'fabric', at(x, 1.27, -0.12, -0.72, 0, x < 0 ? -0.32 : 0.32));
-      push(new THREE.CapsuleGeometry(0.075, 0.25, 4, 8), 'gear', 'limb', 'fabric', at(x * 0.72, 1.1, -0.36, -1.15, 0, x < 0 ? 0.28 : -0.28));
-      push(new THREE.BoxGeometry(0.14, 0.13, 0.1), 'vest', 'limb', 'fabric', at(x * 0.84, 1.13, -0.28));
-      push(new THREE.SphereGeometry(0.058, 9, 7), 'visor', 'limb', 'fabric', at(x * 0.48, 1.08, -0.47));
+      push(new THREE.BoxGeometry(0.2, 0.2, 0.26, 2, 2, 2), 'vest', 'limb', 'flesh', at(x, 1.39, -0.02, 0, 0, x < 0 ? -0.18 : 0.18));
+      push(new THREE.BoxGeometry(0.215, 0.07, 0.275), 'marker', 'limb', 'flesh', at(x, 1.46, -0.02, 0, 0, x < 0 ? -0.18 : 0.18));
+      push(new THREE.CapsuleGeometry(0.085, 0.24, 4, 8), 'uniform', 'limb', 'flesh', at(x, 1.27, -0.12, -0.72, 0, x < 0 ? -0.32 : 0.32));
+      push(new THREE.CapsuleGeometry(0.075, 0.25, 4, 8), 'gear', 'limb', 'flesh', at(x * 0.72, 1.1, -0.36, -1.15, 0, x < 0 ? 0.28 : -0.28));
+      push(new THREE.BoxGeometry(0.14, 0.13, 0.1), 'vest', 'limb', 'flesh', at(x * 0.84, 1.13, -0.28));
+      push(new THREE.SphereGeometry(0.058, 9, 7), 'visor', 'limb', 'flesh', at(x * 0.48, 1.08, -0.47));
     }
     // Rifle is one merged prop that rides with the upper body.
     const rifle = [];
@@ -338,8 +338,8 @@ export class AISystem {
       bot.root.rotation.set(0, 0, 0);
       bot.root.scale.set(1, 1, 1);
       for (const leg of bot.limbs.legs) leg.rotation.x = 0;
-    bot.root.rotation.x = 0; bot.speed = 0; bot.gaitPhase = bot.phase;
-      bot.root.rotation.x = 0; bot.speed = 0; bot.gaitPhase = bot.phase;
+    bot.root.rotation.x = 0; bot.leanX = 0; bot.speed = 0; bot.gaitPhase = bot.phase;
+      bot.root.rotation.x = 0; bot.leanX = 0; bot.speed = 0; bot.gaitPhase = bot.phase;
     }
     this.deployAll();
   }
@@ -371,6 +371,8 @@ export class AISystem {
     bot.root.position.set(spawn.x, spawn.y ?? 0, spawn.z);
     bot.root.rotation.set(0, spawn.yaw ?? 0, 0);
     bot.root.scale.set(1, 1, 1);
+    bot.flinchPitch = 0; bot.flinchRoll = 0; bot.leanX = 0; bot.aimBlend = 0;
+    bot.deathTimer = null; bot.deathFrom = null;
     bot.groundY = spawn.y ?? 0;
     bot.lastX = spawn.x; bot.lastZ = spawn.z;
     bot.stuckTimer = 0;
@@ -386,7 +388,7 @@ export class AISystem {
     bot.inCover = false;
     bot.lastSeen.copy(bot.root.position);
     for (const leg of bot.limbs.legs) leg.rotation.x = 0;
-    bot.root.rotation.x = 0; bot.speed = 0; bot.gaitPhase = bot.phase;
+    bot.root.rotation.x = 0; bot.leanX = 0; bot.speed = 0; bot.gaitPhase = bot.phase;
   }
 
   onRespawn(event) {
@@ -474,6 +476,44 @@ export class AISystem {
         bot.hasCover = false; bot.inCover = false; bot.state = 'search';
       } else this.park(bot);
     }
+  }
+
+  // Stages a single soldier on a clear stretch of market street so character
+  // reaction quality can be judged from actual frames. Everything here runs
+  // through production systems: the real bot, the real movement function, the
+  // real damage event and the real death path. Nothing poses the model directly.
+  stageCharacter(ctx) {
+    this.harnessFreeze = false;
+    const player = ctx.get('player');
+    // Three-quarter view: head-on hides the rifle against the torso and flattens
+    // the leg swing, so carriage, stride and fall direction all read poorly.
+    player.stageHarnessPose({ position: [2.0, 0, 2.5], yaw: 0.675, pitch: 0, eyeHeight: 1.7, stance: 'stand' });
+    ctx.peek('match')?.clearProtection();
+    // Clear leftover tracers and impacts, otherwise the first staged frame shows
+    // effects left over from whatever ran before it.
+    ctx.peek('fx')?.reset(ctx);
+    let subject = null;
+    for (const bot of this.bots) {
+      if (bot.legacy === 0) {
+        this.placeBot(bot, { x: 0, y: 0, z: 0, yaw: Math.PI });
+        bot.participating = true; bot.alive = true; bot.health = 100; bot.root.visible = true;
+        this.setHittable(bot, true);
+        bot.stationary = true;
+        bot.state = 'hold'; bot.hasLos = false; bot.targetId = null;
+        bot.hasCover = false; bot.inCover = false;
+        subject = bot;
+      } else this.park(bot);
+    }
+    return subject;
+  }
+
+  // Damage delivered exactly as a weapon delivers it, so flinch and death are the
+  // production reactions rather than a test-only pose.
+  stageDamage(bot, ctx, { amount, hitZone = 'torso' }) {
+    ctx.events.emit('combat:damage', {
+      targetType: 'enemy', targetId: bot.id, amount, source: 'player',
+      sourceTeam: 'alpha', hitZone,
+    });
   }
 
   // Stages a known-clear five metre engagement on the market street so the probe
@@ -834,7 +874,40 @@ export class AISystem {
       end: { x: end.x, y: end.y, z: end.z }, hit,
     });
     ctx.peek('match')?.reportShot();
-    if (!hit) return;
+    // Rounds that miss must still land somewhere. `fireAt` resolves damage by a
+    // dice roll and never touched the world, so incoming fire produced no dust
+    // off the wall beside the player, no decals, no impact audio - the only cue
+    // you were under fire was the tracer, and nothing at all before the first
+    // hit landed. One ray per missed shot buys all of that back.
+    if (!hit) {
+      this.impactFrom ??= new THREE.Vector3(); this.impactDir ??= new THREE.Vector3();
+      this.impactFrom.set(this.muzzle.x, this.muzzle.y, this.muzzle.z);
+      this.impactDir.set(end.x - this.muzzle.x, end.y - this.muzzle.y, end.z - this.muzzle.z);
+      const range = this.impactDir.length();
+      if (range > 0.5) {
+        this.impactDir.multiplyScalar(1 / range);
+        const landed = ctx.get('physics').raycastWorld?.(this.impactFrom, this.impactDir, range + 6);
+        if (landed) {
+          ctx.events.emit('projectile:impact', {
+            point: landed.point, normal: landed.normal,
+            surface: landed.surface ?? 'concrete', actorId: null, source: bot.id,
+          });
+        }
+      }
+      return;
+    }
+    // A round that lands on a body reports flesh, so the hit reads as a body hit
+    // wherever it struck.
+    ctx.events.emit('projectile:impact', {
+      point: { x: this.target.x, y: this.target.y, z: this.target.z },
+      // Facing back toward the shooter, so the spray throws the right way.
+      normal: {
+        x: (this.muzzle.x - this.target.x) / Math.max(0.001, distance),
+        y: (this.muzzle.y - this.target.y) / Math.max(0.001, distance),
+        z: (this.muzzle.z - this.target.z) / Math.max(0.001, distance),
+      },
+      surface: 'flesh', actorId: bot.targetId, source: bot.id,
+    });
     const damageScale = ctx.harness.scenario === 'profile' ? 0.24 : 1;
     const hitZone = this.rng.next() < 0.1 ? 'head' : 'torso';
     const base = this.rng.range(16, 21) * (hitZone === 'head' ? 1.7 : 1) * damageScale;
@@ -854,6 +927,7 @@ export class AISystem {
     if (!bot?.alive || !bot.participating) return;
     const match = this.ctx.peek('match');
     if (match?.isProtected(bot.id)) return;
+    this.applyFlinch(bot, event);
     // Team deathmatch does not resolve friendly fire into damage.
     const shooter = this.byId.get(event.source);
     const sourceTeam = event.sourceTeam ?? (event.source === 'player' ? 'alpha' : shooter?.team ?? null);
@@ -881,12 +955,36 @@ export class AISystem {
     bot.targetId = null;
     bot.hasCover = false;
     bot.inCover = false;
-    bot.root.rotation.z = bot.index % 2 ? 1.32 : -1.32;
-    bot.root.position.y = bot.groundY + 0.25;
+    // Collapse over half a second instead of flipping instantly. The direction
+    // comes from where the shot came from, so bodies fall away from the shooter.
+    bot.deathRoll = this.chooseFallDirection(bot) * 1.42;
+    bot.deathTimer = 0;
+    bot.deathFrom = { y: bot.root.position.y, roll: bot.root.rotation.z, pitch: bot.root.rotation.x };
+    bot.deathPitch = THREE.MathUtils.clamp((bot.flinchPitch ?? 0) * 3 + this.rng.range(-0.2, 0.2), -0.45, 0.45);
     this.ctx.events.emit('actor:died', {
       actorType: 'enemy', actorId: bot.id, team: bot.team, source, hitZone,
       position: { x: bot.root.position.x, y: bot.root.position.y, z: bot.root.position.z },
     });
+  }
+
+  // Knock the target away from whoever shot it, scaled by the damage. Headshots
+  // snap the head back harder, which is what makes them read as headshots.
+  applyFlinch(bot, event) {
+    const shooter = event.source === 'player'
+      ? this.ctx.get('player').position
+      : this.byId.get(event.source)?.root?.position ?? this.bots.find((b) => b.id === event.source)?.root?.position;
+    const power = THREE.MathUtils.clamp((event.amount ?? 10) / 34, 0.15, 1)
+      * (event.hitZone === 'head' ? 1.8 : 1);
+    let away = 0;
+    if (shooter) {
+      // Component of the shot direction along the bot's own facing.
+      const dx = bot.root.position.x - shooter.x;
+      const dz = bot.root.position.z - shooter.z;
+      const length = Math.hypot(dx, dz) || 1;
+      away = (dx / length) * -Math.sin(bot.root.rotation.y) + (dz / length) * -Math.cos(bot.root.rotation.y);
+    }
+    bot.flinchPitch = THREE.MathUtils.clamp((bot.flinchPitch ?? 0) - away * power * 0.2, -0.3, 0.3);
+    bot.flinchRoll = THREE.MathUtils.clamp((bot.flinchRoll ?? 0) + this.rng.range(-1, 1) * power * 0.12, -0.22, 0.22);
   }
 
   chooseCover(bot) {
@@ -928,7 +1026,9 @@ export class AISystem {
     const frame = ctx.time.frame;
     for (const bot of this.bots) {
       if (!bot.participating) { bot.state = 'hold'; continue; }
-      if (!bot.alive) continue;
+      // Dead bots still animate: a body that snaps flat in one frame is the
+      // single most obvious tell that these are props rather than soldiers.
+      if (!bot.alive) { this.animateDeath(bot, step); continue; }
       bot.lastSeenAge += step;
       bot.fireCooldown -= step;
       bot.repathTimer -= step;
@@ -1059,6 +1159,65 @@ export class AISystem {
     match?.reportStuckRecovery(bot.root.position);
   }
 
+  // Pose readout for capture runs, so a frame that looks wrong can be checked
+  // against numbers instead of argued about from a screenshot.
+  static describePose(bot) {
+    return {
+      alive: bot.alive, visible: bot.root.visible,
+      deathTimer: Number((bot.deathTimer ?? -1).toFixed(3)),
+      rotX: Number(bot.root.rotation.x.toFixed(3)),
+      rotZ: Number(bot.root.rotation.z.toFixed(3)),
+      x: Number(bot.root.position.x.toFixed(2)),
+      y: Number(bot.root.position.y.toFixed(3)),
+      z: Number(bot.root.position.z.toFixed(2)),
+      speed: Number((bot.speed ?? 0).toFixed(2)),
+      flinchPitch: Number((bot.flinchPitch ?? 0).toFixed(3)),
+    };
+  }
+
+  // Which way a body can actually fall. Toppling into a market stall reads as a
+  // physics failure, so a side with no room loses to the side with room.
+  chooseFallDirection(bot) {
+    const physics = this.ctx.peek('physics');
+    const preferred = bot.index % 2 ? 1 : -1;
+    if (!physics) return preferred;
+    this.fallFrom ??= new THREE.Vector3(); this.fallDir ??= new THREE.Vector3();
+    const yaw = bot.root.rotation.y;
+    // Local right in world space; positive roll topples toward it.
+    const rightX = Math.cos(yaw); const rightZ = -Math.sin(yaw);
+    let best = preferred; let bestClearance = -1;
+    for (const side of [preferred, -preferred]) {
+      this.fallFrom.set(bot.root.position.x, bot.root.position.y + 0.9, bot.root.position.z);
+      this.fallDir.set(rightX * side, 0, rightZ * side);
+      const hit = physics.raycastWorldDistance(this.fallFrom, this.fallDir, 2.3);
+      const clearance = hit == null ? 2.3 : hit;
+      if (clearance > bestClearance) { bestClearance = clearance; best = side; }
+      // The preferred side is good enough as soon as a body length fits.
+      if (side === preferred && clearance >= 2.25) return preferred;
+    }
+    return best;
+  }
+
+  // A body drops fast, then settles. Two eases rather than one: the fall is
+  // gravity, the settle is the weight arriving.
+  animateDeath(bot, step) {
+    if (bot.deathTimer == null || bot.deathTimer >= 1) return;
+    bot.deathTimer = Math.min(1, bot.deathTimer + step / 0.55);
+    const t = bot.deathTimer;
+    const fall = 1 - (1 - t) * (1 - t);            // ease-out: quick then slowing
+    const settle = t * t * (3 - 2 * t);            // smoothstep for the roll
+    const from = bot.deathFrom ?? { y: bot.groundY, roll: 0, pitch: 0 };
+    bot.root.rotation.z = THREE.MathUtils.lerp(from.roll, bot.deathRoll, settle);
+    bot.root.rotation.x = THREE.MathUtils.lerp(from.pitch, bot.deathPitch ?? 0, settle);
+    // Rotating about the feet already carries the torso down to about knee
+    // height; adding a further offset left the corpse hovering.
+    bot.root.position.y = THREE.MathUtils.lerp(from.y, bot.groundY + 0.02, fall);
+    // The legs give way ahead of the torso.
+    const slump = settle * 0.55;
+    bot.limbs.legs[0].rotation.x = slump;
+    bot.limbs.legs[1].rotation.x = slump * 0.7;
+  }
+
   animateBot(bot, ctx) {
     const step = ctx.time.fixed;
     // Gait is driven by measured ground speed rather than the AI state, so feet
@@ -1074,18 +1233,64 @@ export class AISystem {
     // Phase advances with distance covered, which is what keeps the contact rate
     // matched to the ground instead of to wall-clock time.
     bot.gaitPhase = (bot.gaitPhase ?? bot.phase) + bot.speed * 1.45 * step;
+    // Audible footfalls from the same gait phase that drives the legs. Bots made
+    // no sound at all, so an enemy could close to knife range in silence.
+    if (bot.alive && bot.speed > 0.6 && Math.abs(bot.root.position.y - bot.groundY) < 0.12) {
+      if (Math.floor(bot.gaitPhase / Math.PI) > Math.floor((bot.lastStepPhase ?? bot.gaitPhase) / Math.PI)) {
+        ctx.events.emit('ai:footstep', {
+          team: bot.team, sprinting: bot.speed > 3.4,
+          surface: this.ctx.get('physics').getGroundSurface(bot.root.position),
+          position: { x: bot.root.position.x, y: bot.root.position.y, z: bot.root.position.z },
+        });
+      }
+    }
+    bot.lastStepPhase = bot.gaitPhase;
     const swing = Math.sin(bot.gaitPhase);
     const stride = swing * (0.1 + gait * 0.36);
     bot.limbs.legs[0].rotation.x = stride;
     bot.limbs.legs[1].rotation.x = -stride;
-    // The rifle rides against the leading leg, over a slow breathing idle.
-    bot.limbs.rifle.rotation.z = -swing * gait * 0.07;
-    bot.limbs.rifle.position.y = 1.2 - Math.abs(swing) * gait * 0.028
-      + Math.sin(ctx.time.elapsed * 1.7 + bot.phase) * 0.012;
+    // Aiming posture. The rifle transform used to be identical whether the bot
+    // was idling, walking or shooting at someone, and it never pitched toward a
+    // target above or below it - a bot on the street fired at the terrace with a
+    // perfectly level weapon. It now tucks toward the shoulder and tracks the
+    // target's elevation while it has line of sight.
+    //
+    // The arms are baked into the merged body mesh and cannot follow the rifle,
+    // so the offsets are deliberately small: enough to read as shouldering the
+    // weapon, not enough to tear the rifle away from the hands.
+    const engaging = bot.alive && bot.hasLos && bot.targetId ? 1 : 0;
+    bot.aimBlend = THREE.MathUtils.damp(bot.aimBlend ?? 0, engaging, 9, step);
+    let aimPitch = 0;
+    if (bot.aimBlend > 0.01) {
+      const target = this.resolveTargetPosition(bot);
+      if (target) {
+        const flat = Math.hypot(target.x - bot.root.position.x, target.z - bot.root.position.z);
+        const rise = (target.y + (target.eye ?? 1.4)) - (bot.root.position.y + 1.35);
+        aimPitch = THREE.MathUtils.clamp(Math.atan2(rise, Math.max(0.8, flat)), -0.5, 0.5);
+      }
+    }
+    // Gait sway on the rifle fades out as the weapon comes up.
+    const carry = 1 - bot.aimBlend;
+    bot.limbs.rifle.rotation.z = -swing * gait * 0.07 * carry;
+    bot.limbs.rifle.position.x = THREE.MathUtils.lerp(0.16, 0.07, bot.aimBlend);
+    bot.limbs.rifle.position.y = THREE.MathUtils.lerp(1.2, 1.29, bot.aimBlend)
+      - Math.abs(swing) * gait * 0.028 * carry
+      + Math.sin(ctx.time.elapsed * 1.7 + bot.phase) * 0.012 * carry;
     // Weight drops at each footfall - twice per stride, not once.
     if (bot.alive) bot.root.position.y = bot.groundY + Math.abs(Math.cos(bot.gaitPhase)) * gait * 0.042;
+    // Hit reaction. Being shot used to change nothing about the target, which
+    // made every exchange feel like shooting cardboard. The impulse is set on
+    // damage and decays, so sustained fire visibly staggers a soldier.
+    bot.flinchPitch = (bot.flinchPitch ?? 0) * Math.max(0, 1 - step * 7);
+    bot.flinchRoll = (bot.flinchRoll ?? 0) * Math.max(0, 1 - step * 7);
     // Lean into the run so a sprinting silhouette reads differently from a walker.
-    bot.root.rotation.x = THREE.MathUtils.damp(bot.root.rotation.x, gait * 0.075, 8, step);
+    // The lean is tracked separately and only composed into the transform at the
+    // end: damping `rotation.x` in place fed each frame's flinch back into the
+    // next frame's starting value, so a headshot compounded to 35 degrees.
+    bot.leanX = THREE.MathUtils.damp(bot.leanX ?? 0, gait * 0.075, 8, step);
+    bot.root.rotation.x = bot.leanX + bot.flinchPitch;
+    bot.root.rotation.z = bot.flinchRoll;
+    bot.limbs.rifle.rotation.x = -0.08 + aimPitch * bot.aimBlend + bot.flinchPitch * -0.7;
     bot.root.scale.y = THREE.MathUtils.damp(bot.root.scale.y, bot.inCover ? 0.86 : 1, 12, step);
   }
 

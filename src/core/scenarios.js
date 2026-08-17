@@ -130,8 +130,12 @@ class EvidenceRecorder {
 // and is deliberately not omniscient.
 async function runTdmCore(engine, options = {}) {
   const seed = Number(options.seed ?? 1337);
+  // Production mode runs the shipped rules untouched. The fast gate keeps a
+  // reachable score limit so it stays quick; production proves the real
+  // configuration a player actually gets is winnable and terminates.
+  const production = Boolean(options.production);
   const scoreLimit = Math.max(4, Math.floor(Number(options.scoreLimit ?? 12)));
-  const maxSeconds = Math.max(30, Number(options.maxSeconds ?? 240));
+  const maxSeconds = Math.max(30, Number(options.maxSeconds ?? (production ? 660 : 240)));
   const ctx = engine.ctx;
 
   await engine.reset({ seed, scenario: 'tdm-core', render: false });
@@ -140,7 +144,16 @@ async function runTdmCore(engine, options = {}) {
   ai.enterMatchMode();
   // Rules are scenario parameters, not results: the match still ends through
   // its own score-limit rule, just at a limit a test can reach.
-  const restoreRules = match.configureRules({ scoreLimit, timeLimitSeconds: 600, respawnSeconds: 1.6 });
+  // In production mode nothing is configured: the match uses its own shipped
+  // SCORE_LIMIT / TIME_LIMIT / RESPAWN_SECONDS.
+  const restoreRules = production
+    ? () => {}
+    : match.configureRules({ scoreLimit, timeLimitSeconds: 600, respawnSeconds: 1.6 });
+  const rulesInEffect = {
+    scoreLimit: match.scoreLimit,
+    timeLimitSeconds: match.timeLimitSeconds,
+    respawnSeconds: match.respawnSeconds,
+  };
 
   const recorder = new EvidenceRecorder(ctx);
   const driver = new PlayerDriver(engine, ctx.rng.fork('driver'));
@@ -174,6 +187,14 @@ async function runTdmCore(engine, options = {}) {
   });
   const winnerDeclared = Boolean(match.winner) && ['alpha', 'bravo', 'draw'].includes(match.winner);
   const matchEndedByScoreLimit = match.phase === 'ended' && match.endReason === 'score-limit';
+  // Production only has to reach a real terminal state through a real rule.
+  const matchEnded = match.phase === 'ended' && ['score-limit', 'time-limit'].includes(match.endReason);
+  const endReason = match.endReason ?? null;
+  // Read per-participant results before the restart reset clears them.
+  const humanParticipant = match.getParticipant('player');
+  const humanKills = humanParticipant?.kills ?? 0;
+  const humanDeaths = humanParticipant?.deaths ?? 0;
+  const participantKills = match.getReport().telemetry.participantKills ?? [];
   const nonFiniteDuring = collectNonFinite(engine);
 
   // Restart through the same reset the rematch button drives.
@@ -225,11 +246,19 @@ async function runTdmCore(engine, options = {}) {
     errors,
     nonFiniteFields: [...new Set([...nonFiniteDuring, ...nonFiniteAfter])],
     evidence,
-    human: { ...driver.report(), kills: match.getParticipant('player')?.kills ?? 0, deaths: match.getParticipant('player')?.deaths ?? 0 },
+    // These come from before the restart reset; reading them after made them
+    // structurally always zero.
+    human: { ...driver.report(), kills: humanKills, deaths: humanDeaths },
+    participantKills,
+    rulesInEffect,
+    endReason,
+    matchEnded,
+    production,
   };
   result.ok = result.matchStarted && result.participantsReady && result.scoreChangedFromKill
     && result.deathObserved && result.respawnObserved && result.scoreboardConsistent
-    && result.matchEndedByScoreLimit && result.winnerDeclared && result.restartReturnedToCleanMatch
+    && (production ? result.matchEnded : result.matchEndedByScoreLimit)
+    && result.winnerDeclared && result.restartReturnedToCleanMatch
     && result.usedProductionDamage && result.usedProductionScoring && result.usedProductionRespawn
     && result.runtimeErrors === 0 && result.nonFiniteState === false;
   return result;
@@ -316,6 +345,7 @@ async function runCombatSoak(engine, options = {}) {
     spawnDeaths: report.telemetry.spawnDeaths,
     firstContactSeconds: report.telemetry.firstContactSeconds,
     averageRespawnToContactSeconds: report.telemetry.averageRespawnToContactSeconds,
+    audio: ctx.peek('audio')?.snapshot?.() ?? null,
     killsByZone: report.telemetry.killsByZone,
     participantKills: report.telemetry.participantKills,
     killSpots: report.telemetry.killSpots,

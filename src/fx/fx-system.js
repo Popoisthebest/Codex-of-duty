@@ -28,10 +28,17 @@ export class FXSystem {
     this.tracerMesh.frustumCulled = false;
     this.group.add(this.tracerMesh);
 
-    this.particleMaterial = new THREE.MeshBasicMaterial({ color: 0xd8b178, transparent: true, opacity: 0.88 });
-    this.particles = Array.from({ length: 120 }, () => ({ life: 0, visible: false, maxLife: 0.4, position: new THREE.Vector3(), velocity: new THREE.Vector3(), size: 0 }));
+    this.particleMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.88 });
+    this.particles = Array.from({ length: 120 }, (_, i) => ({ index: i, life: 0, visible: false, maxLife: 0.4, position: new THREE.Vector3(), velocity: new THREE.Vector3(), size: 0 }));
     this.particleMesh = new THREE.InstancedMesh(new THREE.TetrahedronGeometry(0.045, 0), this.particleMaterial, this.particles.length);
     this.particleMesh.frustumCulled = false;
+    // Per-instance colour: a hit on a body used to throw the same grey debris as
+    // a hit on concrete, so there was no way to tell at a glance whether fire was
+    // landing on a soldier or on the wall behind them.
+    this.particleMesh.instanceColor = new THREE.InstancedBufferAttribute(
+      new Float32Array(this.particles.length * 3).fill(1), 3,
+    );
+    this.particleColor = new THREE.Color();
     this.group.add(this.particleMesh);
 
     this.shellMaterial = new THREE.MeshStandardMaterial({ color: 0xb0813f, roughness: 0.34, metalness: 0.82 });
@@ -118,8 +125,22 @@ export class FXSystem {
     return oldest;
   }
 
+  // A little smoke off the muzzle. Without it sustained fire produces a flash
+  // and nothing else, so the barrel never reads as hot.
+  spawnMuzzleSmoke(origin, direction) {
+    if (this.rng.next() > 0.45) return;
+    const smoke = this.findFree(this.smokes);
+    if (!smoke) return;
+    smoke.life = smoke.maxLife = this.rng.range(0.3, 0.55);
+    smoke.size = this.rng.range(0.16, 0.3);
+    smoke.position.copy(origin).addScaledVector(direction, 0.55);
+    smoke.velocity.set(this.rng.range(-0.15, 0.15), this.rng.range(0.25, 0.6), this.rng.range(-0.15, 0.15))
+      .addScaledVector(direction, this.rng.range(0.5, 1.1));
+  }
+
   onWeaponFired(event) {
     this.spawnTracer(event.origin, event.end, 0.09);
+    this.spawnMuzzleSmoke(event.origin, event.direction);
     const shell = this.findFree(this.shells);
     shell.life = 0.9;
     shell.position.copy(event.origin).addScaledVector(this.ctx.camera.matrixWorld.elements ? this.rightFromCamera() : this.up, 0.22);
@@ -158,9 +179,25 @@ export class FXSystem {
     tracer.end.copy(end);
   }
 
+  // Debris colour by what was hit. Flesh throws dark arterial red; the world
+  // throws material-tinted dust.
+  static IMPACT_TINT = {
+    flesh: [0.42, 0.045, 0.05],
+    metal: [0.72, 0.68, 0.6],
+    glass: [0.78, 0.86, 0.88],
+    wood: [0.5, 0.37, 0.22],
+    fabric: [0.44, 0.4, 0.34],
+    foliage: [0.28, 0.38, 0.2],
+  };
+
   spawnImpact(point, normal, surface, count) {
+    const tint = FXSystem.IMPACT_TINT[surface] ?? [0.62, 0.6, 0.55];
     for (let i = 0; i < count; i += 1) {
       const particle = this.findFree(this.particles);
+      // Vary each fragment so the burst does not read as one flat colour.
+      const shade = this.rng.range(0.75, 1.25);
+      this.particleMesh.instanceColor.setXYZ(particle.index, tint[0] * shade, tint[1] * shade, tint[2] * shade);
+      this.particleMesh.instanceColor.needsUpdate = true;
       particle.life = this.rng.range(0.18, surface === 'flesh' ? 0.32 : 0.5);
       particle.maxLife = particle.life;
       particle.position.copy(point).addScaledVector(normal, 0.025);
@@ -170,6 +207,9 @@ export class FXSystem {
     }
     this.impactSprite.position.copy(point).addScaledVector(normal, 0.05);
     this.impactSprite.scale.setScalar(surface === 'flesh' ? 0.32 : 0.58);
+    this.impactSprite.material.color.setRGB(
+      surface === 'flesh' ? 1 : 1, surface === 'flesh' ? 0.42 : 0.86, surface === 'flesh' ? 0.36 : 0.6,
+    );
     this.impactLife = this.showcase ? 999 : 0.12;
     this.impactSprite.visible = true;
     if (surface !== 'flesh') {
@@ -181,7 +221,9 @@ export class FXSystem {
     }
   }
 
-  spawnDecal(point, normal) {
+  // Called with a surface; the parameter was missing from the signature, so every
+  // decal was the same black circle regardless of what was hit.
+  spawnDecal(point, normal, surface = 'concrete') {
     const index = this.decalCursor++ % 64;
     this.quaternion.setFromUnitVectors(this.forward, normal);
     this.a.copy(point).addScaledVector(normal, 0.006);

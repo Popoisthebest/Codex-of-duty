@@ -1,3 +1,4 @@
+import { AISystem } from '../ai/ai-system.js';
 import { DeterministicRng } from './rng.js';
 import { EventBus } from './events.js';
 import { InputState } from './input.js';
@@ -236,6 +237,154 @@ export class Engine {
       crouch: 'crouch',
       jump: 'jump',
     };
+    // First-person weapon inspection. Every state is reached by driving the same
+    // virtual inputs a player uses - no viewmodel pose is written directly - and
+    // the engine is left paused so the captured frame is the staged frame.
+    if (name === 'stage_weapon') {
+      const render = this.ctx.peek('render');
+      if (render) { render.useCaptureCamera = false; render.showViewmodel = true; }
+      this.setPaused(false);
+      const player = this.ctx.get('player');
+      const weapons = this.ctx.get('weapons');
+      const input = this.ctx.input;
+      input.clearVirtual();
+      player.stageHarnessPose({ position: [0, 0, 6], yaw: 0, pitch: 0, eyeHeight: 1.7, stance: 'stand' });
+      weapons.resetLoadout?.();
+      this.stepFrames(6);
+
+      const pose = String(options.pose ?? 'hip-idle');
+      const frames = Math.max(1, Math.floor(Number(options.frames) || 8));
+      const hold = (name2, value) => input.setVirtual(name2, value);
+
+      if (pose === 'walk' || pose === 'sprint') {
+        hold('forward', true);
+        hold('sprint', pose === 'sprint');
+        this.stepFrames(frames);
+      } else if (pose === 'ads-in' || pose === 'ads-idle') {
+        hold('ads', true);
+        this.stepFrames(pose === 'ads-in' ? Math.min(frames, 4) : frames);
+      } else if (pose === 'shot' || pose === 'burst' || pose === 'ads-shot') {
+        if (pose === 'ads-shot') { hold('ads', true); this.stepFrames(24); }
+        hold('fire', true);
+        this.stepFrames(pose === 'burst' ? frames : 2);
+        hold('fire', false);
+        if (pose !== 'burst') this.stepFrames(Math.max(0, frames - 2));
+      } else if (pose === 'recovery') {
+        hold('fire', true);
+        this.stepFrames(14);
+        hold('fire', false);
+        this.stepFrames(frames);
+      } else if (pose.startsWith('reload')) {
+        weapons.stageHarnessReload?.(4, 120);
+        input.pressVirtual?.('reload');
+        hold('reload', true);
+        this.stepFrames(2);
+        hold('reload', false);
+        this.stepFrames(frames);
+      } else if (pose === 'turn') {
+        // A real flick through the look channel, so the rifle's lag is genuine.
+        for (let i = 0; i < frames; i += 1) {
+          input.injectLook(90, 0);
+          this.stepFrames(1);
+        }
+      } else if (pose === 'landing') {
+        player.position.y += 3.2;
+        player.velocity.y = 0;
+        player.grounded = false;
+        this.stepFrames(frames);
+      } else {
+        this.stepFrames(frames);
+      }
+      input.clearVirtual();
+      this.setPaused(true);
+      return { ...this.snapshot(), weapon: weapons.snapshot?.() ?? null };
+    }
+
+    // Character reaction inspection. Stages one soldier in front of the player
+    // camera and drives it through a real state - walking under the production
+    // movement function, or hit/killed through the production damage event -
+    // then holds for capture.
+    if (name === 'stage_character') {
+      const ai = this.ctx.get('ai');
+      const render = this.ctx.peek('render');
+      if (render) { render.useCaptureCamera = false; render.showViewmodel = false; }
+      // Staging must be the last thing that happens: a capture run settles the
+      // page before it shoots, and any real time that elapses keeps simulating -
+      // which ran the collapse past the requested frame and, further on,
+      // respawned the subject out of shot entirely.
+      this.setPaused(false);
+      const bot = ai.stageCharacter(this.ctx);
+      if (!bot) return this.snapshot();
+      const pose = String(options.pose ?? 'stand');
+      const settle = Math.max(1, Math.floor(Number(options.settle) || 8));
+      this.stepFrames(settle);
+
+      // Aiming and firing while stationary or moving: the bot is given a real
+      // target and left to run its production engage path.
+      if (pose === 'aim' || pose === 'fire' || pose === 'aim-move') {
+        const player = this.ctx.get('player');
+        bot.stationary = pose !== 'aim-move';
+        bot.targetId = 'player';
+        bot.state = 'engage';
+        bot.hasLos = true;
+        bot.lastSeenAge = 0;
+        bot.lastSeen.copy(player.position);
+        bot.fireCooldown = pose === 'fire' ? 0 : 4;
+        const frames = Math.max(1, Math.floor(Number(options.frames) || 12));
+        for (let i = 0; i < frames; i += 1) {
+          if (pose === 'aim-move') ai.moveBot(bot, 1, 0, 2.2 * (1 / 60));
+          this.stepFrames(1);
+        }
+        this.setPaused(true);
+        return { ...this.snapshot(), subject: AISystem.describePose(bot) };
+      }
+
+      if (pose === 'decel') {
+        // Accelerate then stop, so the gait's response to deceleration is visible.
+        bot.stationary = false;
+        for (let i = 0; i < 30; i += 1) { ai.moveBot(bot, 1, 0, 4.6 * (1 / 60)); this.stepFrames(1); }
+        this.stepFrames(Math.max(1, Math.floor(Number(options.frames) || 10)));
+        this.setPaused(true);
+        return { ...this.snapshot(), subject: AISystem.describePose(bot) };
+      }
+
+      if (pose === 'walk' || pose === 'run') {
+        // Real locomotion: the production movement function, stepped frame by
+        // frame, so the gait phase is driven by genuinely measured displacement.
+        bot.stationary = false;
+        const speed = pose === 'run' ? 4.6 : 2.2;
+        const frames = Math.max(1, Math.floor(Number(options.frames) || 40));
+        for (let i = 0; i < frames; i += 1) {
+          ai.moveBot(bot, 1, 0, speed * (1 / 60));
+          this.stepFrames(1);
+        }
+        this.setPaused(true);
+        return { ...this.snapshot(), subject: AISystem.describePose(bot) };
+      }
+
+      if (pose === 'hit' || pose === 'headshot') {
+        ai.stageDamage(bot, this.ctx, pose === 'headshot'
+          ? { amount: 30, hitZone: 'head' }
+          : { amount: 24, hitZone: 'torso' });
+        this.stepFrames(Math.max(1, Math.floor(Number(options.frames) || 3)));
+        this.setPaused(true);
+        return { ...this.snapshot(), subject: AISystem.describePose(bot) };
+      }
+
+      if (pose.startsWith('collapse') || pose === 'dead') {
+        // A lethal shot through the real damage pipeline, then hold for however
+        // long into the collapse this frame wants.
+        ai.stageDamage(bot, this.ctx, { amount: 400, hitZone: 'torso' });
+        this.stepFrames(Math.max(1, Math.floor(Number(options.frames) || 6)));
+        this.setPaused(true);
+        return { ...this.snapshot(), subject: AISystem.describePose(bot) };
+      }
+
+      this.stepFrames(Math.max(1, Math.floor(Number(options.frames) || 6)));
+      this.setPaused(true);
+      return { ...this.snapshot(), subject: AISystem.describePose(bot) };
+    }
+
     // Visual inspection: stand the player at a chosen spot and facing so a
     // capture run can photograph new geometry from actual eye height.
     if (name === 'inspect_from') {

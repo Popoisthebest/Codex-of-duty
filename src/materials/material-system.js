@@ -2,6 +2,12 @@ import * as THREE from 'three';
 
 const PALETTES = {
   asphalt: ['#353a3b', '#252a2b', '#505554'], concrete: ['#898780', '#696963', '#aaa79d'],
+  // The deployment yards floor 100 m x 24 m of unoccluded ground. In plain
+  // `concrete` (albedo 2.3x the market's asphalt) under the same sun rig, that
+  // slab measured 10x the luminance of the night sky above it while the market
+  // street sits at roughly 1x - the yards read as daylight inside a night map.
+  // The market is untouched; only the yard slab uses this darker mix.
+  yardSlab: ['#383c3f', '#282c30', '#4c5052'],
   plasterWarm: ['#a58d72', '#796957', '#c1aa8b'], plasterBlue: ['#587079', '#3d555d', '#789099'],
   brick: ['#815342', '#56382f', '#a26c54'], metal: ['#4d5555', '#252c2e', '#747b79'],
   rust: ['#754d34', '#3d322a', '#a56740'], wood: ['#72563b', '#473723', '#9a7550'],
@@ -76,7 +82,7 @@ export class MaterialSystem {
     } else if (name === 'metal' || name === 'rust') {
       colorCtx.strokeStyle = 'rgba(210,220,215,.13)'; for (let i = 0; i < 90; i += 1) colorCtx.fillRect(hash2(i, 8, 23) * size, hash2(i, 3, 19) * size, 10 + hash2(i, 5, 7) * 60, 1);
       if (name === 'rust') { colorCtx.fillStyle = 'rgba(73,34,20,.38)'; for (let i = 0; i < 30; i += 1) { colorCtx.beginPath(); colorCtx.arc(hash2(i, 2, 5) * size, hash2(i, 7, 9) * size, 2 + hash2(i, 4, 3) * 12, 0, Math.PI * 2); colorCtx.fill(); } }
-    } else if (name === 'asphalt' || name === 'concrete' || name.startsWith('plaster')) {
+    } else if (name === 'asphalt' || name === 'concrete' || name === 'yardSlab' || name.startsWith('plaster')) {
       colorCtx.strokeStyle = name === 'asphalt' ? 'rgba(12,15,15,.48)' : 'rgba(44,42,38,.25)'; colorCtx.lineWidth = name === 'asphalt' ? 1.35 : 0.7;
       const segments = name === 'asphalt' ? 4 : 3; const reach = name === 'asphalt' ? 13 : 8;
       for (let i = 0; i < 24; i += 1) { let x = hash2(i, 1, 17) * size; let y = hash2(i, 2, 23) * size; colorCtx.beginPath(); colorCtx.moveTo(x, y); for (let s = 0; s < segments; s += 1) { x += (hash2(i, s, 41) - 0.5) * reach; y += 3 + hash2(s, i, 13) * reach; colorCtx.lineTo(x, y); } colorCtx.stroke(); }

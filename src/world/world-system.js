@@ -101,12 +101,20 @@ export class WorldSystem {
 
   // `collision` registers a solid whose vertical span defaults to floor level.
   // Elevated masses pass an explicit `minY` so an actor can walk beneath them.
-  box(size, position, material, { collision = false, surface = 'concrete', rotation = null, bevel = false, minY = null, walkable = false, cast = true, raycast = true } = {}) {
-    const key = `box:${size.join(',')}:${bevel ? 1 : 0}`;
+  // `fitUv` keeps the geometry's 0..1 UVs. Per-face UV scaling is right for
+  // tiling materials but destroys a fitted texture: sign canvases from
+  // `createSign` are single 512x128 images that must map exactly once across the
+  // face. Scaled by dimension/2.2 with clamp-to-edge they crop, and on small
+  // signs the whole text row falls outside the face - five of nine signs on the
+  // map were rendering as blank panels.
+  box(size, position, material, { collision = false, surface = 'concrete', rotation = null, bevel = false, minY = null, walkable = false, cast = true, raycast = true, fitUv = false } = {}) {
+    // The flag has to be part of the cache key, or a sign box would share cached
+    // geometry with a same-sized wall box and inherit its scaled UVs.
+    const key = `box:${size.join(',')}:${bevel ? 1 : 0}:${fitUv ? 'fit' : 'tile'}`;
     let geometry = this.geometryCache.get(key);
     if (!geometry) {
       geometry = bevel ? new THREE.BoxGeometry(...size, 2, 2, 2) : new THREE.BoxGeometry(...size);
-      WorldSystem.scaleBoxUvs(geometry, size);
+      if (!fitUv) WorldSystem.scaleBoxUvs(geometry, size);
       this.geometryCache.set(key, geometry);
     }
     const mesh = new THREE.Mesh(geometry, material); mesh.position.fromArray(position); if (rotation) mesh.rotation.set(...rotation); this.add(mesh, { surface, cast, raycast });
@@ -483,9 +491,9 @@ export class WorldSystem {
     for (let i = 0; i < 15; i += 1) {
       const z = 4.8 + (i % 5) * 0.7; const y = 1.13 + Math.floor(i / 5) * 0.72;
       this.cylinder(0.11, 0.11, 0.28, [11.05, y, z], i % 3 === 0 ? this.materials.get('rust') : metal, 'metal', 12);
-      this.box([0.012, 0.1, 0.16], [10.935, y, z], teaLabel, { surface: 'metal' });
+      this.box([0.012, 0.1, 0.16], [10.935, y, z], teaLabel, { surface: 'metal', fitUv: true });
     }
-    this.box([0.025, 0.38, 1.75], [11.29, 2.76, 7.72], menuLabel, { surface: 'wood' });
+    this.box([0.025, 0.38, 1.75], [11.29, 2.76, 7.72], menuLabel, { surface: 'wood', fitUv: true });
     // Stock, weighing scale and hanging herbs make this room feel actively used.
     const fabric = this.materials.get('fabric'); const rust = this.materials.get('rust');
     for (let i = 0; i < 5; i += 1) {
@@ -698,7 +706,7 @@ export class WorldSystem {
       this.cylinder(0.29, 0.29, 0.026, [x, 1.102, z], metal, 'metal', 18);
       this.cylinder(0.045, 0.045, 0.035, [x - 0.16, 1.13, z + 0.08], rust, 'metal', 12);
       this.box([0.018, 0.62, 0.035], [x - 0.342, 0.64, z], metal, { surface: 'metal' });
-      this.box([0.016, 0.2, 0.27], [x - 0.354, 0.66, z], barrelLabel, { surface: 'metal' });
+      this.box([0.016, 0.2, 0.27], [x - 0.354, 0.66, z], barrelLabel, { surface: 'metal', fitUv: true });
       this.solid(x - 0.38, x + 0.38, z - 0.38, z + 0.38, 0, 1.15, 'metal');
     }
     for (let i = 0; i < 8; i += 1) this.box([0.82, 0.54, 0.68], [-5.0 + (i % 2) * 0.76, 0.38 + Math.floor(i / 2) * 0.48, -3.7 + (i % 3) * 0.14], wood, { surface: 'wood' });
@@ -737,9 +745,9 @@ export class WorldSystem {
     const signA = this.materials.createSign('SABLE MARKET', '#183e40', '#d9f4e8');
     const signB = this.materials.createSign('HOTEL ALBA', '#5e2c24', '#f1d29b');
     const signC = this.materials.createSign('KARIM AUTO', '#24364b', '#e0e8e3');
-    this.box([0.08, 1.15, 4.2], [-6.72, 3.25, 6.6], signA, { surface: 'metal' });
-    this.box([0.08, 1.0, 3.35], [6.7, 3.55, -3.1], signB, { surface: 'metal' });
-    this.box([0.08, 0.85, 3.0], [-6.68, 2.5, -11.4], signC, { surface: 'metal' });
+    this.box([0.08, 1.15, 4.2], [-6.72, 3.25, 6.6], signA, { surface: 'metal', fitUv: true });
+    this.box([0.08, 1.0, 3.35], [6.7, 3.55, -3.1], signB, { surface: 'metal', fitUv: true });
+    this.box([0.08, 0.85, 3.0], [-6.68, 2.5, -11.4], signC, { surface: 'metal', fitUv: true });
     // Clock and end-gate create a navigation anchor.
     const clockFace = new THREE.MeshStandardMaterial({ color: 0xd8d0b5, emissive: 0x6b5434, emissiveIntensity: 0.65, roughness: 0.55 }); this.localMaterials.push(clockFace);
     const clock = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.72, 0.1, 28), clockFace); clock.position.set(0, 4.75, -18.42); clock.rotation.x = Math.PI / 2; this.add(clock, { surface: 'glass' });
@@ -916,7 +924,7 @@ export class WorldSystem {
       this.emitter(x, 6.4, z, 0xffd9a5, 3.2, 20, 2);
     }
     const depotSign = this.materials.createSign('SABLE FREIGHT', '#2b3a2c', '#dfe8cd');
-    this.box([0.1, 1.4, 8], [-22.85, 6.4, 4], depotSign, { surface: 'metal' });
+    this.box([0.1, 1.4, 8], [-22.85, 6.4, 4], depotSign, { surface: 'metal', fitUv: true });
     this.landmark('depot', 'Sable Freight Depot', -33.5, 1, 6.4);
     this.transition('depot-yard-east', 'west-yard', 'depot', -23, -1);
     this.transition('depot-north', 'depot', 'west-yard', -34, -11);
@@ -1049,7 +1057,7 @@ export class WorldSystem {
       this.emitter(x, y - 0.2, z, 0xcfe4ff, 2.5, 16, 2);
     }
     const officeSign = this.materials.createSign('BUREAU 12', '#1f3448', '#dbe6f2');
-    this.box([0.1, 1.3, 7], [18.85, roofY - 1.4, 2], officeSign, { surface: 'metal' });
+    this.box([0.1, 1.3, 7], [18.85, roofY - 1.4, 2], officeSign, { surface: 'metal', fitUv: true });
     this.landmark('bureau', 'Bureau 12', 24.5, 2, roofY);
     this.transition('offices-west', 'east-terrace', 'east-offices', 19, 1);
     this.transition('offices-east', 'east-terrace', 'east-offices', 30, 6);
@@ -1107,8 +1115,11 @@ export class WorldSystem {
       const zNear = south ? 21 : -44;
       const zFar = south ? 45 : -55;
       this.batchKey = `${team}-yard`;
+      // Yard depth differs a lot per side (alpha 24 m, bravo 11 m), so everything
+      // in the yard is placed as a fraction of it rather than at fixed offsets.
+      const yardDepth = Math.abs(zFar - zNear);
       this.surfaceRect(-50, 50, Math.min(zNear, zFar), Math.max(zNear, zFar), 'concrete');
-      this.box([100, 0.06, Math.abs(zFar - zNear)], [0, 0.03, (zNear + zFar) * 0.5], concrete, { surface: 'concrete' });
+      this.box([100, 0.06, Math.abs(zFar - zNear)], [0, 0.03, (zNear + zFar) * 0.5], this.materials.get('yardSlab'), { surface: 'concrete' });
       // Front line with three gates; the shoulders beyond x = +-27 stay open so
       // the yard has five ways out rather than one funnel.
       this.wallRun({
@@ -1127,13 +1138,83 @@ export class WorldSystem {
         this.emitter(gate, 4.4, zNear + depth * 1.2, south ? 0x7fe6e2 : 0xff8b5a, 3.4, 16, 2);
       }
       // Staging clutter across the full width, so the yard is a place, not a box.
-      for (const ox of [-34, -16, 0, 16, 34]) {
-        const cz = zNear + depth * 8;
+      // Tents were at a fixed 8 m offset while the canopy, mast and floodlights
+      // are placed as fractions of yard depth. In bravo's 11 m yard the fractions
+      // collapsed onto the tent row and built ten poles - including all four legs
+      // of the comms mast, the zone's own landmark - straight through the tents.
+      // Tents now use the same fraction, and any tent whose slot is claimed by a
+      // pole is skipped rather than intersected.
+      const tentZ = zNear + depth * yardDepth * 0.28;
+      // Poles stand at x = +-33 (floodlights), +-16.6 (canopy legs) and +-0.8
+      // (mast legs). The tent row is offset to sit between those lines.
+      const poleXs = [-33, -16.6, -0.8, 0.8, 16.6, 33];
+      for (const ox of [-40, -24, -8, 8, 24, 40]) {
+        if (poleXs.some((px) => Math.abs(px - ox) < 3.2)) continue;
+        const cz = tentZ;
         const tent = new THREE.Mesh(new THREE.ConeGeometry(3.2, 2.8, 4), fabric);
         tent.position.set(ox, 1.4, cz); tent.rotation.y = Math.PI / 4; this.add(tent, { surface: 'fabric' });
         this.solid(ox - 2.2, ox + 2.2, cz - 2.2, cz + 2.2, 0, 2.8, 'fabric');
         this.coverPoints.push([ox, cz + depth * 3.2]);
       }
+      // The rear half of each yard measured as bare concrete - a 6 m deep band
+      // running clear for ninety metres, the emptiest ground on the map and a
+      // quarter of its walkable area. All the existing clutter sat within 16 m of
+      // the front line. This is the deep staging that was missing: a vehicle
+      // canopy, a supply dump and a comms mast, clustered into two readable
+      // groups rather than scattered, so the yard reads as a place without
+      // becoming noise to fight through.
+      const metalMat = this.materials.get('metal');
+      const woodMat = this.materials.get('wood');
+      for (const side of [-1, 1]) {
+        const bayX = side * 21;
+        const bayZ = zNear + depth * yardDepth * 0.55;
+        // Open-sided vehicle canopy: four legs and a roof, a strong silhouette
+        // against a wall that was otherwise unbroken.
+        const bayD = yardDepth > 18 ? 3.2 : 2.2;
+        for (const [dx, dz] of [[-4.4, -bayD], [4.4, -bayD], [-4.4, bayD], [4.4, bayD]]) {
+          this.cylinder(0.16, 0.18, 4.2, [bayX + dx, 2.1, bayZ + dz], metalMat);
+          this.solid(bayX + dx - 0.2, bayX + dx + 0.2, bayZ + dz - 0.2, bayZ + dz + 0.2, 0, 4.2, 'metal');
+        }
+        this.box([10.2, 0.22, bayD * 2.4], [bayX, 4.3, bayZ], metalMat, { surface: 'metal' });
+        this.box([10.6, 0.1, 0.5], [bayX, 4.5, bayZ - bayD * 1.1], rust, { surface: 'metal' });
+        // Fuel drums and pallet stacks under the canopy.
+        for (const [dx, dz] of [[-3.4, 1.9], [-2.6, 2.5], [3.2, -2.0]]) {
+          this.cylinder(0.42, 0.42, 1.15, [bayX + dx, 0.58, bayZ + dz], rust);
+          this.solid(bayX + dx - 0.42, bayX + dx + 0.42, bayZ + dz - 0.42, bayZ + dz + 0.42, 0, 1.15, 'metal');
+        }
+        for (let i = 0; i < 3; i += 1) {
+          this.box([2.6, 0.34, 1.7], [bayX + 2.4, 0.17 + i * 0.36, bayZ + 2.4], woodMat, { collision: i === 0, surface: 'wood' });
+        }
+        this.coverPoints.push([bayX + 2.4, bayZ + 4.0], [bayX - 4.8, bayZ]);
+        // Painted bay markings: the flat slab had no ground detail at all.
+        for (const dz of [-bayD * 0.8, bayD * 0.8]) {
+          this.box([9.6, 0.02, 0.16], [bayX, 0.05, bayZ + dz], rust, { surface: 'concrete', cast: false });
+        }
+        this.box([0.16, 0.02, 5.4], [bayX - 4.8, 0.05, bayZ], rust, { surface: 'concrete', cast: false });
+      }
+      // Comms mast: the yard's landmark and its only vertical reference.
+      const mastZ = zNear + depth * yardDepth * 0.82;
+      for (const [dx, dz] of [[-0.8, -0.8], [0.8, -0.8], [-0.8, 0.8], [0.8, 0.8]]) {
+        this.cylinder(0.09, 0.11, 13, [dx, 6.5, mastZ + dz], metalMat);
+        this.solid(dx - 0.14, dx + 0.14, mastZ + dz - 0.14, mastZ + dz + 0.14, 0, 13, 'metal');
+      }
+      this.box([2.3, 0.18, 2.3], [0, 13, mastZ], metalMat, { surface: 'metal' });
+      for (const dy of [7.4, 10.2]) this.box([3.4, 0.1, 0.5], [0, dy, mastZ], rust, { surface: 'metal' });
+      this.emitter(0, 13.4, mastZ, south ? 0x7fe6e2 : 0xff8b5a, 2.2, 22, 1);
+      this.landmark(`${team}-mast`, south ? 'Alpha Comms Mast' : 'Bravo Comms Mast', 0, mastZ, 13);
+      // Generator and cable runs at the mast base: infrastructure, not scatter.
+      this.box([2.2, 1.2, 1.4], [3.2, 0.6, mastZ], rust, { collision: true, surface: 'metal' });
+      this.coverPoints.push([3.2, mastZ + 1.8]);
+      this.addCable([[0.8, 1.2, mastZ], [2.6, 0.9, mastZ], [3.2, 1.2, mastZ]]);
+      // Floodlights washing the back wall, so the rear is lit rather than flat.
+      for (const fx of [-33, 33]) {
+        const fz = zNear + depth * yardDepth * 0.72;
+        this.cylinder(0.13, 0.15, 5.4, [fx, 2.7, fz], metalMat);
+        this.solid(fx - 0.18, fx + 0.18, fz - 0.18, fz + 0.18, 0, 5.4, 'metal');
+        this.box([1.3, 0.5, 0.35], [fx, 5.5, fz], metalMat, { surface: 'metal' });
+        this.emitter(fx, 5.4, fz + depth * 0.6, 0xffd9a5, 3.0, 24, 2);
+      }
+
       for (const [ox, oz] of [[-42, 14], [-24, 15], [-8, 16], [8, 16], [24, 15], [42, 14]]) {
         const cz = zNear + depth * oz;
         this.box([2.4, 1.5, 2.4], [ox, 0.75, cz], rust, { collision: true, surface: 'metal' });
@@ -1145,7 +1226,7 @@ export class WorldSystem {
       this.addSandbagLine(24, zNear + depth * 3, 6, 'x');
       for (const [x, oz] of [[-30, 4], [0, 4], [30, 4], [-16, 18], [16, 18]]) this.addLamp(x, zNear + depth * oz);
       const label = this.materials.createSign(south ? 'ALPHA STAGING' : 'BRAVO STAGING', south ? '#123a45' : '#4a1f1c', '#e6f1ef');
-      this.box([12, 1.8, 0.12], [0, 4.6, zFar + (south ? -0.4 : 0.4)], label, { surface: 'metal' });
+      this.box([12, 1.8, 0.12], [0, 4.6, zFar + (south ? -0.4 : 0.4)], label, { surface: 'metal', fitUv: true });
       this.landmark(`${team}-staging`, south ? 'Alpha Staging' : 'Bravo Staging', 0, zFar, 4.6);
       this.transition(`${team}-gate-west`, `${team}-yard`, south ? 'west-yard' : 'north-junction', -16, zNear);
       this.transition(`${team}-gate-centre`, `${team}-yard`, south ? 'market' : 'north-junction', 0, zNear);

@@ -19,9 +19,11 @@
     "gameplay:check": "node tools/gameplay-check.mjs",
     "gameplay:map-audit": "node tools/gameplay-map-audit.mjs",
     "gameplay:verify": "npm run build && npm run harness:check && npm run harness:playtest && npm run gameplay:check",
-    "gameplay:full": "npm run gameplay:verify && npm run gameplay:map-audit",
+    "gameplay:full": "npm run gameplay:verify && npm run gameplay:map-audit && npm run gameplay:production",
     "harness:frame": "node tools/frame-profile.mjs",
-    "gameplay:soak": "node tools/gameplay-soak.mjs"
+    "gameplay:soak": "node tools/gameplay-soak.mjs",
+    "gameplay:production": "node tools/gameplay-production.mjs",
+    "audio:load": "node tools/audio-load.mjs"
   },
   "dependencies": {
     "three": "0.180.0"

@@ -857,6 +857,515 @@ Per direction, structural chasing stops here. Recorded, not fixed:
   measured ground speed, with footfall weight twice per stride, run lean, and
   rifle counter-swing.
 
+---
+
+## Pass 11 — production-rules gate, then the combat-feel phase opens
+
+### Validation blind spot closed
+
+No gate ran the configuration a player actually receives. `gameplay:check` used
+score limit 12 with a 1.6 s respawn; the soak raised the limit to 100000 so the
+match never ended. Both are correct for what they do, and neither proved the
+shipped rules are winnable or that they terminate.
+
+`npm run gameplay:production` (`tools/gameplay-production.mjs`) runs the shipped
+rules **untouched** — the scenario's production mode calls `configureRules` not at
+all, so the match uses its own `SCORE_LIMIT` 50 / `TIME_LIMIT` 600 /
+`RESPAWN_SECONDS` 3.2 — across six deterministic seeds. It asserts the rules in
+effect really are the production values, the roster is 6v6, the match reaches a
+terminal state through a real rule, a winner is declared, restart returns a clean
+match, damage/scoring/respawn went through production pipelines, and there are no
+runtime errors or non-finite state. It is **added alongside** the fast gates, not
+in place of them, and is wired into `gameplay:full`.
+
+Its regression floors are deliberately far from measured values — minimum kills,
+maximum spawn-death share, maximum single-participant kill share, minimum count of
+distinct bots that scored. They catch a broken build, not drift.
+
+**Result: 6/6 seeds pass, all ending by score limit** at 392–504 s inside a 600 s
+clock. Scores are close (50–47, 50–46, 50–43, 50–42, 38–50, 50–45) and **both
+teams win across the seed set**. That is a direct consequence of the pass-10
+lethality fix: the reviewer had measured 5/5 alpha sweeps with zero lead changes.
+
+Two related defects fixed:
+
+- **`result.human` was built after the restart reset**, so its kill/death fields
+  were structurally always 0. Now read before the reset.
+- **Every match started from seed 1337** — boot and REMATCH replayed the same
+  opening deployment and bot decision stream. Real play now draws a fresh seed;
+  the harness still pins its own.
+
+### Combat feel
+
+- **Enemies had no reaction to being hit.** Nothing about a target changed when
+  it was shot, so exchanges felt like shooting cardboard. Damage now applies a
+  flinch impulse directed away from the shooter, scaled by damage and multiplied
+  for headshots, decaying over ~150 ms, driving torso pitch/roll and the rifle.
+- **Death snapped `rotation.z` to ±1.32 in a single frame.** Bodies flipped flat
+  instantly. Dead bots were also skipped by the animation loop entirely. They now
+  collapse over 550 ms on two eases — an ease-out fall for gravity, a smoothstep
+  for the roll — with the legs giving way ahead of the torso and the fall
+  direction taken from the incoming shot.
+- **Impact debris was one colour.** A hit on a body threw the same amber
+  fragments as a hit on concrete, so there was no way to tell at a glance whether
+  fire was landing. Particles are now per-instance coloured by surface — flesh
+  throws dark arterial red, metal/glass/wood/foliage take material tints — with
+  per-fragment shade variation, and the impact flash tints to match.
+
+### Character and movement
+
+- **Bot gait was time-driven** at a fixed 6 rad/s and gated on AI state, so feet
+  slid and a bot holding an angle walked on the spot. Gait now advances with
+  measured ground speed, with footfall weight twice per stride, run lean and
+  rifle counter-swing.
+- **Player camera bob was time-driven too** — it kept its cadence as the player
+  decelerated and never lined up with a footfall. Now distance-driven, with a
+  lateral figure-eight at half the vertical frequency and a matching roll, which
+  is what separates walking from an elevator. Landing dip and lean already
+  existed and were left alone.
+
+### Environment
+
+- **Lit windows** were a flat emissive colour reading as an orange rectangle up
+  close. Now a generated interior — ceiling falloff, off-centre bulb, blinds or
+  curtain or furniture silhouette, grime, frame — in three variants so a facade
+  is not a repeated stencil.
+
+### Known limitations from this pass
+
+- The death collapse and flinch are verified by code review and green gates, not
+  by a captured frame: the canonical `combat` camera is a fixed pose and the
+  bodies fall outside it. A body-level capture rig is still missing.
+- `tools/combat-shots.mjs` was added to photograph an engagement over time and is
+  useful for HUD/FX checks, but it does not frame the fallen.
+- Audio (priority 4) is untouched; footsteps are not yet synced to the new
+  distance-driven stride phase, which is the obvious next win now that both the
+  player and the bots carry a real gait phase.
+
+---
+
+## Pass 12 — character reaction verified from frames, footsteps put on the real gait
+
+### The capture gap is closed
+
+`runAction('stage_character')` + `tools/character-shots.mjs` stage one soldier in
+three-quarter view and drive it through eight states: standing, walking, running,
+torso hit, headshot, early collapse, mid collapse, final dead pose.
+
+Everything runs through production systems — the real bot, the real `moveBot`
+movement function stepped frame by frame, the real `combat:damage` event, the
+real death path. **Nothing is posed directly for a screenshot.** The action also
+returns a numeric pose readout (`AISystem.describePose`), so a frame that looks
+wrong can be checked against numbers instead of argued about.
+
+### Defects the rig found, all fixed
+
+1. **Corpses floated.** Death set the root to `groundY + 0.25`, but rotating
+   about the feet already carries the torso down to roughly knee height, so the
+   offset was pure hover. Now `groundY + 0.02`.
+2. **Bodies toppled into scenery.** Fall direction alternated on bot index with
+   no regard for what was there. `chooseFallDirection()` now probes both sides
+   and takes the one with room, preferring the shot direction when it fits. Probe
+   distance is 2.3 m because a body sweeps ~1.75 m about the feet — an earlier
+   1.9 m probe passed obstacles the body then hit.
+3. **The first staged frame showed stale tracers**, left over from whatever ran
+   before it. Staging now resets FX.
+4. **The rifle buried itself in the chest on a flinch.** Swing coefficient
+   1.6 -> 0.7.
+5. **Flinch compounded to 35 degrees on a headshot.** `rotation.x` was damped
+   *in place* toward the run lean, so each frame's flinch was fed back into the
+   next frame's starting value even though `flinchPitch` itself is clamped to
+   0.3. The lean is now tracked separately in `bot.leanX` and only composed into
+   the transform at the end. Headshot flinch is 0.207 rad (12 deg), torso 0.097
+   (5.6 deg).
+6. **The capture rig itself was not deterministic** — the tool called `settle()`
+   after staging, letting real time advance, so the collapse ran past the
+   requested frame and at 18 frames the subject had *respawned out of shot*. The
+   action now leaves the engine paused; the frame captured is the frame staged.
+
+### Verified progression (measured, not asserted)
+
+| state | rotZ | rotX | speed |
+|---|---|---|---|
+| stand | 0 | 0 | 0 |
+| walk | 0 | 0.039 | 2.38 |
+| run | 0 | 0.077 | 4.71 |
+| hit torso | −0.008 | 0.097 | 0 |
+| headshot | 0.128 | 0.207 | 0 |
+| collapse early | 0.124 | 0.039 | — |
+| collapse mid | 0.807 | 0.256 | — |
+| dead final | 1.42 | 0.45 | — |
+
+The collapse interpolates smoothly (0.004 → 0.124 → 0.427 → 0.807 → 1.42) and
+completes at frame 33, matching the intended 0.55 s. Run lean is twice walk lean.
+No snapping, no sliding, no rifle separation.
+
+### Footsteps on the real gait
+
+- **Player**: the camera bob and the footfall were two independent accumulators
+  running at different rates, so the sound drifted against the motion. Both now
+  derive from one `bobPhase`, advanced by `speed * (π / strideLength) * step`.
+  A footfall fires each half cycle — exactly when `|sin|` bottoms out, which is
+  the low point of the bob. Stride length is per stance (sprint 1.45, walk 1.72,
+  crouch 2.1), so sprinting quickens cadence, slowing slackens it, stopping ends
+  it at the `speed > 0.4` gate, and crouch is slower and heavier. Distance-based
+  and inside the fixed step, so frame-rate variation cannot double-fire. Surface
+  already drove the sound and still does.
+- **Bots had no footsteps at all** — an enemy could close to knife range in
+  silence. They now emit `ai:footstep` off the same `gaitPhase` that drives the
+  legs, gated on alive, moving faster than 0.6 m/s, and grounded. Audio plays it
+  spatially through the existing panner with distance attenuation, culled beyond
+  26 m, at `priority: -1` so footsteps are dropped before gunfire under voice
+  pressure. The existing `VOICE_BUDGET` protection is untouched.
+
+All six gates and the production gate pass after these changes.
+
+### Known limitations
+
+- The soldier's shoulder marker bands read as slightly wide from three-quarter
+  view; whether that is splayed arm geometry or just the team-ID banding is not
+  resolved, and geometry was left alone rather than changed on a guess.
+- Combat audio layering (priority 3) is not started: rifle voicing, near/far
+  gunfire, indoor/outdoor response and impact/reload/kill cues are unchanged.
+
+---
+
+## Pass 13 — combat audio: two real bugs found by instrumenting first
+
+### Audit
+
+The gunfire near/far crossfade, team timbre, occlusion lowpass, distance rolloff
+and reverb send were already in place from an earlier pass and were left alone.
+The gaps were elsewhere, and instrumenting before changing anything found two
+defects that had been silently shaping every firefight.
+
+### Defect 1 — the voice priority formula was inverted
+
+```js
+if (this.activeVoices >= VOICE_BUDGET - priority * 8) return false;
+```
+
+A *higher* priority produced a *lower* allowance. At `priority: 3` the limit
+computes to **zero**, so the distant gunfire tail — the layer that makes far-off
+combat sound like a battlefield — **could never play at all**. Meanwhile the bot
+footsteps added last pass at `priority: -1` were allowed 32, above the budget of
+24, which is how the measured peak reached 32.
+
+Now `limit = max(4, VOICE_BUDGET - (MAX_PRIORITY - priority) * 4)`: higher
+priority gets more of the budget, and `VOICE_BUDGET` is a hard ceiling for
+everything. Measured peak dropped 32 → 24.
+
+### Defect 2 — the player's own footsteps outranked gunfire
+
+Set to the top priority they could consume the entire budget alone and mask the
+shots being fired at the player. Demoted below gunfire. In the load test that
+moved gunfire voices from **0 to non-zero** while shots were being fired.
+
+### Sound work
+
+- **Player rifle**: every shot was byte-identical and responded the same indoors
+  as in the open. Now four layers — mechanical transient (2.6 kHz, 12 ms), blast
+  body, low-frequency weight, and a tail that carries the room — each varied
+  ±6% per shot. Indoors the tail is louder, longer and darker (gain 0.26 vs 0.11,
+  0.46 s vs 0.3 s, reverb 0.5 vs 0.18). Indoor state is sampled every 15 frames
+  from `world.zoneAt`, not queried per shot.
+- **Impacts** were one burst with two branches, so concrete, wood and glass were
+  indistinguishable and a body hit sounded like a wall hit. Now a per-material
+  table (flesh / metal / glass / wood / concrete / brick / foliage / fabric) with
+  per-hit variation, and flesh gets an extra low thud so it reads as mass.
+- **Near-miss crack**: enemy rounds that miss are projected onto their own shot
+  line to find closest approach to the listener; inside 3.2 m they crack. Costs
+  one dot product per missed shot, no new ballistics.
+- **Player feedback** that had no audio at all: kill confirmation (higher and
+  doubled for headshots), player death (descending body plus a long dark wash),
+  respawn, deployment, victory and defeat stings, low-health ringing under 35 hp,
+  and match-point / lead-change stingers. The UI announcement path was visual
+  only; it now emits `match:announce` so audio can sting it without re-deriving
+  lead state.
+- **Reload** was one anonymous rustle; it is now three mechanical moments so the
+  player can hear where in the cycle the weapon is.
+
+### Instrumentation and the load test
+
+`npm run audio:load` (`tools/audio-load.mjs`) launches with autoplay permitted,
+unlocks the context with a real gesture, and runs 90 s of 6v6 combat. The normal
+gates cannot catch audio faults: headless harness runs never unlock a context, so
+`state` stays `uninitialized` and every counter reads zero.
+
+Reported: peak voices vs budget, drops split by budget vs distance, voices by
+category, peak and average spatial voices, and context state. It fails on a
+faulted context, a peak above the ceiling, silence during combat, or gunfire
+being starved while shots are fired.
+
+Result: **context `running`, peak 24 against a budget of 24, no fault** across
+90 s of sustained combat.
+
+One measurement bug fixed on the way: the tool first read the post-run bridge
+snapshot, but `runCombatSoak` builds its result and *then* does a verification
+`engine.reset()` which zeroes every counter — so it was measuring the reset. Same
+class of bug as the `result.human` defect in pass 11. It now reads the scenario's
+own snapshot.
+
+### Known limitations
+
+- **Per-category voice mix under the load test is not representative.** The
+  scenario simulates synchronously, so the main thread never yields and WebAudio
+  cannot deliver a single `ended` callback for the entire run — no voice ever
+  retires, the budget saturates early, and 1500+ later sounds are dropped. Peak
+  and ceiling are meaningful because `canPlay` gates on the same counter;
+  steady-state mix is not. Measuring that properly needs a chunked scenario that
+  yields, which was not built.
+- Audio is verified by measurement and code review, not by listening.
+- Priorities 4-7 (weapon presentation, character presentation, match
+  presentation, environment polish) are not started.
+
+---
+
+## Pass 14 — weapon presentation
+
+### Architecture diagnosis first
+
+The viewmodel is a **single rigid group**. Rifle, gloved hands, fingers, knuckle
+plates and sleeves are all added to `this.group` via `makePart`, so nothing can
+move independently of anything else. Staged hand animation — a support hand that
+actually pulls a magazine — would require re-parenting the hands and magazine
+into their own sub-groups.
+
+Per the instruction not to fabricate hand animation the architecture cannot
+support cleanly, that re-parenting was **not** attempted. The reload was improved
+within what a rigid group can express, and the limitation is recorded rather than
+papered over.
+
+One suspected defect was investigated and **dismissed**: what looked like a
+floating detached hand in the hip-idle frame is the tan `accent` magazine, which
+is where it belongs. The hands and sleeves are correctly placed and connected.
+No geometry was changed on the strength of a misread frame.
+
+### Fixed
+
+- **Weapon bob was time-driven** (`sin(t * 7.7)`, `cos(t * 15.4)`) — the third
+  instance of this defect after the camera and the bots. The weapon rose while
+  the footstep fell. It now rides the player's own `bobPhase`, the same phase
+  driving the camera and the footstep audio, so all three are locked together.
+- **No inertia at all.** The rifle was welded to the camera, so whipping the view
+  moved the weapon as if painted on the lens. It now lags the view: angular
+  velocity of yaw/pitch drives damped sway (clamped so a fast flick cannot throw
+  it off screen), plus translation drift so starting and stopping has weight.
+  ADS tightens sway to 28%, since an aimed weapon is braced.
+- **Recoil was translation only** — the rifle slid but never rotated, which is
+  what made repeated fire read as a moving prop. Firing now adds a rotational
+  kick about the grip plus a little roll, recovering on a slower curve (damp 11)
+  than the positional recoil (damp 18), so a burst climbs and settles instead of
+  buzzing symmetrically. ADS halves the visual kick.
+- **Reload was one sine arc across the full 1.95 s** — the definition of
+  procedural motion. It is now staged against the same timeline the audio uses:
+  cant over (t<0.3), held clear while the magazine drops (t<0.52), firm push back
+  to level as the fresh magazine seats (t<0.78), then a short sharp charging
+  handle jolt. Verified from frames: the magazine-clear beat drops the rifle well
+  out of the sight line, clearly distinct from hip idle.
+- **No muzzle smoke.** Sustained fire produced a flash and nothing else, so the
+  barrel never read as hot. Smoke now puffs off the muzzle on roughly 45% of
+  shots, reusing the existing smoke pool so no new voices or draw calls.
+
+### Capture rig
+
+`runAction('stage_weapon')` + `tools/weapon-shots.mjs` capture 14 states: hip
+idle, walk, sprint, ADS in, ADS idle, single shot, burst, recoil recovery, ADS
+shot, three reload beats, turn inertia and landing.
+
+Every state is reached by driving the same virtual inputs a player uses — `fire`,
+`ads`, `reload`, `sprint`, and a real `injectLook` flick for the turn — with no
+viewmodel pose written directly. The engine is left paused so the captured frame
+is the staged frame, the same discipline the character rig needed. The action
+returns the weapon snapshot, so ADS blend and ammo are checkable per frame
+(measured: ADS 0.00 → 0.70 → 1.00, ammo decrementing, reload engaged).
+
+### Known limitations
+
+- Independent hand/magazine animation needs the viewmodel split into sub-groups.
+  Not attempted this pass; the reload reads as staged but the hands still move
+  rigidly with the rifle.
+- Combat-feedback synchronisation (trigger → flash → audio → tracer → impact →
+  hitmarker) was reviewed in code and is single-frame coherent, but was not
+  measured frame-by-frame against a timeline.
+- Priorities 5-7 (character presentation, match presentation, environment polish)
+  are not started.
+
+---
+
+## Pass 15 — character presentation, then the worst environment zone
+
+### Character: two suspected defects investigated, one real
+
+The rig was extended with the states the previous pass lacked — `aim`, `fire`,
+`aim-move`, `decel` — all driven through production paths (the bot is given a
+real target and left to run its own engage behaviour; `decel` accelerates under
+`moveBot` then stops so the gait's response is visible).
+
+**Dismissed after inspection**: the rifle appeared to be held in a lowered carry
+during firing. It is not — the rifle group sits at chest height with
+`rotation.x = -0.08`, essentially level, and what read as "pointing down" was
+foreshortening from the three-quarter camera. No geometry was changed. This is
+the second time a frame-read alone would have caused a wrong rebuild (the first
+was the "floating hand" that turned out to be the magazine), which is why the
+capture rig reports numbers alongside the image.
+
+**Real and fixed**: the rifle transform was *identical* whether the bot was
+idling, walking or shooting, and it never pitched toward a target's elevation —
+a bot on the street engaged the terrace with a perfectly level weapon. There is
+now an `aimBlend` that tucks the rifle toward the shoulder (x 0.16 → 0.07,
+y 1.2 → 1.29) and pitches it to the target's elevation, clamped to ±0.5 rad,
+with gait sway on the weapon fading out as it comes up.
+
+The offsets are deliberately small. **Architecture limit**: the arms are baked
+into the merged body mesh — only `legs` and `rifle` are separate groups — so the
+arms cannot follow the weapon. Moving the rifle further would tear it away from
+the hands. A proper shouldered aim needs an upper-body group holding torso, arms
+and rifle together; that is the minimum safe structural change and it was **not**
+attempted here.
+
+### Environment: alpha-yard
+
+The zone map-director measured as the worst on the map — **25.9% of walkable
+area for 0.49% of kills** — and the capture confirmed it: a flat pale slab, one
+unbroken wall of repeated pilasters, a single sign. No props, no cover, no
+vertical reference, no ground detail.
+
+The existing staging clutter was all within 16 m of the front line; the rear half
+was the 6 m deep, 90 m wide clear band that had been measured. Added, clustered
+into two readable groups rather than scattered:
+
+- an open-sided **vehicle canopy** per side, with fuel drums and pallet stacks
+- a **comms mast** — the yard's landmark and its only vertical reference — with
+  a generator and cable run at its base
+- **floodlight masts** washing the back wall
+- **painted bay markings** on ground that previously had no detail at all
+
+Both yards get this; it is scaled as a fraction of yard depth because alpha is
+24 m deep and bravo only 11 m. A first attempt used fixed offsets and put the
+canopy at z 46 and the mast at z 54 — outside the yard and, for bravo, outside
+the map. Caught by capture, not by the gates.
+
+### Validation
+
+All six fast gates, the production gate (**6/6 seeds ending by score limit**),
+audio load (context running, peak 24/24), and both capture rigs (12 character
+frames, 14 weapon frames) are green.
+
+### Known limitations
+
+- Bot arms cannot follow the rifle without an upper-body group (above).
+- Match presentation (priority 6) was reviewed rather than rebuilt: the loop
+  already carries briefing, deploy countdown, HUD, kill feed, scoreboard, death
+  card, per-player end card and rematch, and the independent gameplay review
+  called it the strongest part of the project. No changes made.
+- Environment polish covered alpha-yard and bravo-yard only. north-junction's
+  cover gap (p90 12.5 m to cover, 25.7% of nodes over 6 m), the perimeter
+  margins, the arcade's isolation and facade repetition elsewhere are untouched.
+- The yards' ground is still a large flat expanse away from the new markings.
+
+---
+
+## Pass 16 — final adversarial review and repair
+
+Three independent reviews were run against the live build: **qa-auditor**,
+**visual-critic**, **combat-designer**. Each re-ran gates itself rather than
+trusting this document.
+
+### qa-auditor — PASS, one gap closed
+
+Re-ran every gate independently and reproduced the capture rigs' numeric tables
+exactly. Confirmed the production gate is not vacuous (production mode skips
+`configureRules` entirely), found **no further instances** of the post-reset-read
+bug class, and confirmed the capture rigs drive production systems rather than
+posing for the camera.
+
+One real gap, now fixed: `tools/gameplay-production.mjs` discarded the `errors`
+array from `newHarnessPage`, so six ~400-600 s production matches — the longest
+runs in the suite — could not fail on a browser-level error. It now asserts, like
+the soak and check gates.
+
+### visual-critic — three defects, all fixed, two of them my own regressions
+
+1. **Every sign on the map was UV-destroyed; 5 of 9 rendered blank.** `box()`
+   applied `scaleBoxUvs` unconditionally, but `createSign` produces *fitted*
+   512x128 canvases that must map 0..1. With clamp-to-edge the text row fell
+   outside the face entirely. A regression from the per-face UV work in `a0a669e`,
+   proven against a pre-regression artifact. Fixed with a `fitUv` opt-out applied
+   at all 9 sign sites — **including the geometry cache key**, or a sign would
+   have shared cached geometry with a same-sized wall. ALPHA/BRAVO STAGING now
+   read in full; previously cropped to 18% of the face.
+2. **Ten poles built through the tents in both spawn yards.** My pass-15 staging
+   placed the canopy, mast and floodlights as fractions of yard depth while the
+   tent row stayed at a fixed 8 m offset. In bravo's 11 m yard the fractions
+   collapsed onto the tents and skewered all four legs of the comms mast — the
+   zone's own registered landmark — through the centre tent. Tents now derive
+   from the same fraction, sit between the pole lines, and skip any slot a pole
+   claims.
+3. **The yards were lit as daylight inside a night map.** Ground luminance
+   measured 172 against a sky of 17 (10.2x) while the market sits at 1.2x. Root
+   cause was not a light bug: the yards floor 100 m x 24 m of unoccluded ground
+   in `concrete`, 2.3x the albedo of the market's asphalt, under a midday sun rig
+   the market hides behind buildings. Fixed with a dedicated darker `yardSlab`
+   material — **the market is untouched**. Now 47.6 against sky 12.7 (3.8x); some
+   gap is correct, since a yard is genuinely open where a street is shaded.
+
+### combat-designer — three defects, all fixed
+
+Measured on the live build through production systems, not read from code.
+
+1. **Recoil never recovered.** `applyRecoil` added to `this.pitch` and nothing
+   anywhere subtracted it: a held trigger climbed **+16.05 degrees** over one
+   magazine, monotonically, and stayed there after release — **3 of 30 rounds
+   landed**. Worse, the viewmodel's own kick *did* damp back, so the player
+   watched the rifle settle onto the crosshair while their aim was 16 degrees
+   into the sky. Now `applyRecoil` records the debt and `recoverRecoil` returns it
+   after a short delay, with player look input paying the debt down first so
+   pulling against the climb is not undone a moment later.
+2. **90% of body hits reported `fabric`/`metal`/`glass`, not `flesh`.** Only the
+   bare head sphere and neck carried flesh, and both sat *inside* a larger metal
+   helmet. So a torso hit threw world-dust particles and smoke, stamped a bullet
+   decal into the air where the man's chest was, and played `fabric` at gain 0.09
+   — quieter than concrete. The blood tint and flesh thud added in passes 13-14
+   were unreachable in normal play. All character parts now report flesh; the
+   held rifle keeps its own material. Also fixed: `spawnDecal` was declared with
+   two parameters and called with three, silently discarding the surface.
+3. **Incoming fire produced no world impact at all.** `fireAt` resolved damage by
+   a dice roll and never touched the world — measured 27 rounds fired at the
+   player, **0 impact events**. No dust off the wall, no decals, no impact audio,
+   and nothing at all before the first hit landed. Misses now cast one ray and
+   emit a real `projectile:impact`; hits emit a flesh impact at the target.
+
+### Final validation
+
+| check | result |
+|---|---|
+| 5 fast gates | all exit 0 |
+| production gate | **6/6 seeds by score limit**, now asserting browser errors |
+| multi-seed soak | kills 32.8, human K/D 0.93, human share 20.8%, spawn deaths 1.62% |
+| audio load | context running, peak 24/24 |
+| capture rigs | 12 character, 14 weapon frames |
+
+### Honest limitations
+
+- **The recoil fix is verified by construction and by green gates, not by
+  re-running the reviewer's live measurement.** I could not reproduce their probe
+  harness in the remaining budget; my own probe never triggered fire (peak read
+  0 degrees, i.e. no recoil applied at all), so it measured nothing either way.
+  This should be re-measured before the next milestone.
+- **Player-vs-bot TTK remains asymmetric: 0.176 s against 4.73 s (~27x).** Pass
+  10's rebalance was tuned against the deliberately handicapped scripted driver,
+  not against the two weapon models directly. Matches between bot teams are
+  competitive (both teams win across seeds) but a 1v1 against a human is not a
+  duel. This needs real-human tuning data the harness cannot produce.
+- Recorded, not fixed: tracers and muzzle flashes ignore team while audio uses
+  it; the crosshair widens with movement though spread does not; the rifle fires
+  at 600 RPM not the declared 680 (sub-step remainder discarded); the three
+  reload timelines (viewmodel / HUD / audio) do not align; bot LOS is a single
+  chest ray so partial cover is binary; one shared impact sprite across all
+  combatants; player camera has no interpolated `update`, so aim is quantized to
+  60 Hz.
+
 ## Remaining highest-impact problems
 
 1. **Elevated combat** — occupancy 4.8 -> 9.8 (pass 7) -> 18.5 (pass 9, from

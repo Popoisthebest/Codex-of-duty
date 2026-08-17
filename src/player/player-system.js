@@ -13,6 +13,13 @@ const LEGACY_SPAWN = [0, 0, 6];
 const REGEN_DELAY = 4.5;        // seconds out of contact before recovery starts
 const REGEN_PER_SECOND = 18;
 const REGEN_CEILING = 100;
+// Recoil recovery. `applyRecoil` used to add to `this.pitch` and nothing
+// anywhere subtracted it: a held trigger climbed +16 degrees over one magazine,
+// monotonically, and stayed there after release. Three of thirty rounds landed.
+// The viewmodel's own kick damped back to rest the whole time, so the rifle
+// visibly settled onto the crosshair while the actual aim was in the sky.
+const RECOIL_RECOVER_RATE = 1.9;   // rad/s of climb returned
+const RECOIL_RECOVER_DELAY = 0.09; // held briefly so sustained fire still climbs
 
 // v3 scenarios run a real match, so they use match-selected spawns instead.
 const MATCH_SCENARIOS = new Set(['tdm-core', 'combat-soak']);
@@ -47,6 +54,10 @@ export class PlayerSystem {
     this.sprintBlend = 0;
     this.landDip = 0;
     this.landDipVelocity = 0;
+    this.bobPhase = 0;
+    this.recoilPending = 0;
+    this.recoilYawPending = 0;
+    this.recoilDelay = 0;
     this.lastDamageFrom = null;
     this.damageDirection = 0;
     this.damageTimer = 0;
@@ -97,6 +108,10 @@ export class PlayerSystem {
     this.sprintBlend = 0;
     this.landDip = 0;
     this.landDipVelocity = 0;
+    this.bobPhase = 0;
+    this.recoilPending = 0;
+    this.recoilYawPending = 0;
+    this.recoilDelay = 0;
     this.lastDamageFrom = null;
     this.damageDirection = 0;
     this.damageTimer = 0;
@@ -125,6 +140,10 @@ export class PlayerSystem {
     this.sprintBlend = 0;
     this.landDip = 0;
     this.landDipVelocity = 0;
+    this.bobPhase = 0;
+    this.recoilPending = 0;
+    this.recoilYawPending = 0;
+    this.recoilDelay = 0;
     this.lastDamageFrom = null;
     this.damageTimer = 0;
     this.setAimZoom(0, true);
@@ -156,7 +175,13 @@ export class PlayerSystem {
     }
     const sensitivity = 0.00225;
     this.yaw -= input.lookX * sensitivity;
-    this.pitch = THREE.MathUtils.clamp(this.pitch - input.lookY * sensitivity, -1.42, 1.42);
+    const lookPitch = -input.lookY * sensitivity;
+    this.pitch = THREE.MathUtils.clamp(this.pitch + lookPitch, -1.42, 1.42);
+    // Pulling down against the climb pays off the debt instead of being reversed
+    // by the recovery a moment later.
+    if (lookPitch < 0 && (this.recoilPending ?? 0) > 0) {
+      this.recoilPending = Math.max(0, this.recoilPending + lookPitch);
+    }
 
     const crouching = input.isDown('crouch');
     const movingForward = input.isDown('forward');
@@ -189,11 +214,16 @@ export class PlayerSystem {
     const ground = physics.groundHeightAt(this.position.x, this.position.z, this.position.y, this.grounded ? 0.46 : 0.05);
     this.groundY = ground;
     if (this.grounded && speed > 0.4) {
-      this.stepDistance += speed * step;
+      // Footfalls come from the same phase that drives the camera bob, so a step
+      // is heard exactly when the camera reaches the bottom of its stride. They
+      // used to be two independent accumulators running at different rates, so
+      // the sound drifted against the motion.
       const stride = this.sprinting ? 1.45 : this.stance === 'crouch' ? 2.1 : 1.72;
-      if (this.stepDistance >= stride) {
-        this.stepDistance -= stride;
-        ctx.events.emit('player:footstep', { surface: physics.getGroundSurface(this.position), speed, sprinting: this.sprinting, position: { x: this.position.x, y: this.position.y, z: this.position.z } });
+      const before = this.bobPhase ?? 0;
+      this.bobPhase = before + speed * (Math.PI / stride) * step;
+      // |sin| bottoms out every half cycle: one footfall per stride length.
+      if (Math.floor(this.bobPhase / Math.PI) > Math.floor(before / Math.PI)) {
+        ctx.events.emit('player:footstep', { surface: physics.getGroundSurface(this.position), speed, sprinting: this.sprinting, stance: this.stance, position: { x: this.position.x, y: this.position.y, z: this.position.z } });
       }
     }
     if (this.position.y <= ground) {
@@ -219,6 +249,7 @@ export class PlayerSystem {
     this.landDipVelocity += -this.landDip * 190 * step;
     this.landDipVelocity *= Math.max(0, 1 - 12 * step);
     this.landDip += this.landDipVelocity * step;
+    this.recoverRecoil(step);
     const leanInput = Number(input.isDown('leanRight')) - Number(input.isDown('leanLeft'));
     this.lean = THREE.MathUtils.damp(this.lean, leanInput * 0.075, 12, step);
     this.syncCamera(ctx, false);
@@ -232,10 +263,24 @@ export class PlayerSystem {
 
   syncCamera(ctx, immediate) {
     const speed = Math.hypot(this.velocity.x, this.velocity.z);
-    const moveBob = immediate ? 0 : Math.sin(ctx.time.elapsed * (this.sprinting ? 12 : 8.5)) * Math.min(0.022, speed * 0.003);
+    // Bob advances with distance covered, not wall-clock time. Driven by elapsed
+    // time it kept its cadence while the player decelerated and never lined up
+    // with a footfall; driven by distance it is a stride. The lateral term runs at
+    // half the vertical frequency, which is what makes it read as walking rather
+    // than as an elevator.
+    const bobAmount = immediate ? 0 : Math.min(0.024, speed * 0.0032);
+    const moveBob = Math.abs(Math.sin(this.bobPhase)) * bobAmount - bobAmount * 0.5;
+    const bobSide = Math.sin(this.bobPhase * 0.5) * bobAmount * 0.9;
+    const bobRoll = Math.sin(this.bobPhase * 0.5) * bobAmount * 0.35;
     const leanX = Math.cos(this.yaw) * this.lean; const leanZ = -Math.sin(this.yaw) * this.lean;
-    ctx.camera.position.set(this.position.x + leanX, this.position.y + this.eyeHeight + moveBob + this.landDip, this.position.z + leanZ);
-    ctx.camera.rotation.set(this.pitch, this.yaw, -this.lean, 'YXZ');
+    // Lateral bob is applied along the camera's right axis.
+    const rightX = Math.cos(this.yaw); const rightZ = -Math.sin(this.yaw);
+    ctx.camera.position.set(
+      this.position.x + leanX + rightX * bobSide,
+      this.position.y + this.eyeHeight + moveBob + this.landDip,
+      this.position.z + leanZ + rightZ * bobSide,
+    );
+    ctx.camera.rotation.set(this.pitch, this.yaw, -this.lean + bobRoll, 'YXZ');
   }
 
   applyDamage(amount, source = 'unknown', hitZone = null) {
@@ -272,7 +317,29 @@ export class PlayerSystem {
   applyRecoil(pitch, yaw) {
     this.pitch = THREE.MathUtils.clamp(this.pitch + pitch, -1.42, 1.42);
     this.yaw += yaw;
+    // Remember what recoil put there so it can be given back.
+    this.recoilPending = (this.recoilPending ?? 0) + pitch;
+    this.recoilYawPending = (this.recoilYawPending ?? 0) + yaw;
+    this.recoilDelay = RECOIL_RECOVER_DELAY;
     this.syncCamera(this.ctx, true);
+  }
+
+  // Return the climb once fire stops. Player look input consumes the debt first,
+  // so pulling down against the rise is not undone a moment later.
+  recoverRecoil(step) {
+    if (this.recoilDelay > 0) { this.recoilDelay -= step; return; }
+    const pending = this.recoilPending ?? 0;
+    if (pending > 0.0001) {
+      const back = Math.min(pending, RECOIL_RECOVER_RATE * step);
+      this.pitch = THREE.MathUtils.clamp(this.pitch - back, -1.42, 1.42);
+      this.recoilPending = pending - back;
+    } else this.recoilPending = 0;
+    const yawPending = this.recoilYawPending ?? 0;
+    if (Math.abs(yawPending) > 0.0001) {
+      const back = THREE.MathUtils.clamp(yawPending, -RECOIL_RECOVER_RATE * step, RECOIL_RECOVER_RATE * step);
+      this.yaw -= back;
+      this.recoilYawPending = yawPending - back;
+    } else this.recoilYawPending = 0;
   }
 
   setAimZoom(blend, immediate = false) {
